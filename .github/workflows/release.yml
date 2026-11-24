@@ -122,11 +122,30 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      - name: Resolve platform bundle arguments
+        id: bundle-args
+        working-directory: desktop
+        shell: bash
+        run: |
+          ARGS="${{ matrix.tauri_args }}"
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            APP_VER=$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version" | tr -d '\r\n')
+            if [[ "$APP_VER" == *-* ]]; then
+              PRE="${APP_VER#*-}"
+              PRE="${PRE%%+*}"
+              if ! [[ "$PRE" =~ ^[0-9]+$ ]] || (( 10#$PRE > 65535 )); then
+                echo "::notice::Windows WiX MSI does not support pre-release version '$APP_VER'; building NSIS installer only."
+                ARGS="--bundles nsis"
+              fi
+            fi
+          fi
+          echo "tauri_args=$ARGS" >> "$GITHUB_OUTPUT"
+
       - name: Build Tauri native installers (${{ matrix.bundles }})
         working-directory: desktop
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: npx tauri build ${{ matrix.tauri_args }}
+        run: npx tauri build ${{ steps.bundle-args.outputs.tauri_args }}
 
       - name: Collect built installers
         shell: bash

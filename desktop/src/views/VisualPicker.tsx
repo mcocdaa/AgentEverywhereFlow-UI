@@ -331,8 +331,10 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
   const toolbarRef = useRef<HTMLDivElement | null>(null)
   const inNativeTauri = isTauri()
 
-  targetsRef.current = targets
-  hoveredTargetRef.current = hoveredTarget
+  useEffect(() => {
+    targetsRef.current = targets
+    hoveredTargetRef.current = hoveredTarget
+  }, [targets, hoveredTarget])
 
   const updatePickerGeom = useCallback((geom: PickerGeometry | null) => {
     pickerGeomRef.current = geom

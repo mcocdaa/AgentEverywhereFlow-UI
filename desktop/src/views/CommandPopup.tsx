@@ -200,8 +200,10 @@ export function CommandPopup({
   const isRunningRef = useRef<boolean>(isRunning)
   const pendingSwitchRef = useRef<Promise<void> | null>(null)
 
-  sessionIdRef.current = sessionId
-  isRunningRef.current = isRunning
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+    isRunningRef.current = isRunning
+  }, [sessionId, isRunning])
 
   const inputId = useId()
   useToolbarRoving(toolbarRef)
@@ -359,7 +361,9 @@ export function CommandPopup({
   )
 
   const applySelectionRef = useRef(applySelection)
-  applySelectionRef.current = applySelection
+  useEffect(() => {
+    applySelectionRef.current = applySelection
+  }, [applySelection])
 
   // Listen for target selection, daemon status, and bootstrap progress events
   useEffect(() => {

@@ -139,6 +139,17 @@ export interface BorderStateSnapshot {
   height: number
 }
 
+export interface PickerGeometry {
+  logical_x: number
+  logical_y: number
+  logical_width: number
+  logical_height: number
+  physical_x: number
+  physical_y: number
+  scale_factor: number
+  os_coord_space: 'logical' | 'physical'
+}
+
 export async function getPillState(): Promise<PillStateSnapshot | null> {
   if (!isTauri()) return null
   try {
@@ -152,6 +163,15 @@ export async function getBorderState(): Promise<BorderStateSnapshot | null> {
   if (!isTauri()) return null
   try {
     return await tauriInvoke<BorderStateSnapshot | null>('get_border_state')
+  } catch {
+    return null
+  }
+}
+
+export async function getPickerGeometry(): Promise<PickerGeometry | null> {
+  if (!isTauri()) return null
+  try {
+    return await tauriInvoke<PickerGeometry | null>('get_picker_geometry')
   } catch {
     return null
   }
@@ -247,4 +267,9 @@ export async function openStudioInBrowser(url: string): Promise<void> {
 export async function hideCommand(): Promise<void> {
   if (!isTauri()) return
   await tauriInvoke('hide_command')
+}
+
+export async function quitApp(): Promise<void> {
+  if (!isTauri()) return
+  await tauriInvoke('quit_app')
 }

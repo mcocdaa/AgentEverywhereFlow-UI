@@ -5,15 +5,17 @@ use daemon::{
     bootstrap_via_uv, current_daemon_url, discover_or_start_daemon, discover_or_start_inner,
     restart_daemon, shutdown_managed_daemon, DaemonState,
 };
+#[cfg(target_os = "macos")]
+use tauri::menu::{AboutMetadata, Submenu};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, RunEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use windows::{
     close_picker_and_open_command, collapse_to_pill, expand_from_pill, get_border_state,
-    get_pill_state, get_self_pid, hide_command, hide_target_border, open_studio_in_browser,
-    resize_command_window, resize_pill_window, show_picker, show_target_border,
-    toggle_command_window, OverlayState,
+    get_picker_geometry, get_pill_state, get_self_pid, hide_command, hide_target_border,
+    open_studio_in_browser, quit_app, resize_command_window, resize_pill_window, show_picker,
+    show_target_border, toggle_command_window, OverlayState,
 };
 
 fn register_summon_shortcut(app: &tauri::App) {
@@ -100,6 +102,57 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn setup_macos_menu(app: &tauri::App) -> tauri::Result<()> {
+    let pkg_info = app.package_info();
+    let about_metadata = AboutMetadata {
+        name: Some("AEFlow".to_string()),
+        version: Some(pkg_info.version.to_string()),
+        ..Default::default()
+    };
+
+    let app_menu = Submenu::with_items(
+        app,
+        "AEFlow",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+
+    let window_menu = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[&PredefinedMenuItem::close_window(app, None)?],
+    )?;
+
+    let menu = Menu::with_items(app, &[&app_menu, &edit_menu, &window_menu])?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let daemon_state = DaemonState::default();
@@ -125,6 +178,7 @@ pub fn run() {
             get_self_pid,
             get_border_state,
             get_pill_state,
+            get_picker_geometry,
             show_picker,
             close_picker_and_open_command,
             resize_command_window,
@@ -135,9 +189,14 @@ pub fn run() {
             expand_from_pill,
             open_studio_in_browser,
             hide_command,
+            quit_app,
         ])
         .setup(|app| {
             register_summon_shortcut(app);
+            #[cfg(target_os = "macos")]
+            if let Err(err) = setup_macos_menu(app) {
+                eprintln!("[aeflow-desktop] macOS menu setup warning: {err}");
+            }
             if let Err(err) = setup_tray(app) {
                 eprintln!("[aeflow-desktop] Tray setup warning: {err}");
             }

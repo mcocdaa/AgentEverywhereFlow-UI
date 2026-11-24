@@ -100,7 +100,7 @@ export function InlineConfigDrawer({
   return (
     <section
       aria-label={t.configDrawerTitle}
-      className="aef-fade-in border-t border-white/10 bg-slate-950/55 px-4 py-3"
+      className="aef-fade-in bg-slate-950/55 px-4 py-3"
     >
       <div className="mb-2.5 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">

@@ -28,6 +28,7 @@ export interface Translations {
   settingsAria: string
   collapseToPillAria: string
   hideWindowAria: string
+  quitAppAria: string
   commandInputLabel: string
   commandPlaceholder: string
   sendActionAria: string
@@ -43,6 +44,7 @@ export interface Translations {
   slashPermDesc: string
   slashStudioDesc: string
   slashSettingsDesc: string
+  slashNewDesc: string
   slashClearDesc: string
 
   // Onboarding & Daemon
@@ -84,8 +86,11 @@ export interface Translations {
   statusError: string
   youLabel: string
   agentLabel: string
+  newChat: string
   clearConversation: string
   noOutputYet: string
+  targetSwitchedPrefix: string
+  targetSwitchedSuffix: string
 
   // Visual Picker
   pickerToolbarAria: string
@@ -94,6 +99,8 @@ export interface Translations {
   pickerModeCdp: string
   pickerEscHint: string
   pickerHoverGuide: string
+  pickerClickToBind: string
+  pickerQuickBind: string
   pickerDragRegionLabel: string
   pickerRegionCustomTitle: string
   pickerDisplaysSection: string
@@ -160,6 +167,7 @@ export const translations: Record<Locale, Translations> = {
     settingsAria: '模型与引擎设置',
     collapseToPillAria: '收起为状态胶囊',
     hideWindowAria: '隐藏命令浮窗',
+    quitAppAria: '关闭退出应用 (⌘Q)',
     commandInputLabel: '输入要让 AEFlow 执行的任务指令',
     commandPlaceholder: '你想干什么？ // 输入以开始',
     sendActionAria: '发送指令',
@@ -174,6 +182,7 @@ export const translations: Record<Locale, Translations> = {
     slashPermDesc: '切换权限模式（自主执行 / 人工审批）',
     slashStudioDesc: '在浏览器中打开完整 Studio 工作台',
     slashSettingsDesc: '配置模型、服务地址与密钥',
+    slashNewDesc: '开启新对话并重置上下文',
     slashClearDesc: '清空当前对话流',
 
     daemonConnecting: '连接本地引擎中...',
@@ -212,8 +221,11 @@ export const translations: Record<Locale, Translations> = {
     statusError: '执行出错',
     youLabel: '指令',
     agentLabel: 'AEFlow',
+    newChat: '新对话',
     clearConversation: '清空记录',
     noOutputYet: '正在感知目标视口...',
+    targetSwitchedPrefix: '已切换操作目标至「',
+    targetSwitchedSuffix: '」· 上下文已保留',
 
     pickerToolbarAria: '可视化目标选择模式切换',
     pickerModeHover: '拾取窗口 / 框选区域',
@@ -221,6 +233,8 @@ export const translations: Record<Locale, Translations> = {
     pickerModeCdp: '无头浏览器 CDP',
     pickerEscHint: 'Esc 退出',
     pickerHoverGuide: '移动光标悬停高亮窗口并单击绑定，或按住鼠标左键拖拽框选任意区域',
+    pickerClickToBind: '单击绑定',
+    pickerQuickBind: '绑定',
     pickerDragRegionLabel: '自定义区域',
     pickerRegionCustomTitle: '自定义区域',
     pickerDisplaysSection: '显示器',
@@ -282,6 +296,7 @@ export const translations: Record<Locale, Translations> = {
     settingsAria: 'Model & engine settings',
     collapseToPillAria: 'Collapse to status pill',
     hideWindowAria: 'Hide command popup',
+    quitAppAria: 'Quit AEFlow (⌘Q)',
     commandInputLabel: 'Enter a task instruction for AEFlow',
     commandPlaceholder: 'What do you want to do? // Type to start',
     sendActionAria: 'Send instruction',
@@ -296,6 +311,7 @@ export const translations: Record<Locale, Translations> = {
     slashPermDesc: 'Toggle permission mode (Auto / Manual Approval)',
     slashStudioDesc: 'Open full WebUI Studio in browser',
     slashSettingsDesc: 'Configure model, base URL, and API key',
+    slashNewDesc: 'Start a fresh conversation context',
     slashClearDesc: 'Clear active conversation stream',
 
     daemonConnecting: 'Connecting to local engine...',
@@ -334,8 +350,11 @@ export const translations: Record<Locale, Translations> = {
     statusError: 'Error',
     youLabel: 'Prompt',
     agentLabel: 'AEFlow',
+    newChat: 'New Chat',
     clearConversation: 'Clear',
     noOutputYet: 'Observing bound viewport...',
+    targetSwitchedPrefix: 'Switched viewport to "',
+    targetSwitchedSuffix: '" · Context preserved',
 
     pickerToolbarAria: 'Visual target picker mode selector',
     pickerModeHover: 'Pick Window / Crop Region',
@@ -343,6 +362,8 @@ export const translations: Record<Locale, Translations> = {
     pickerModeCdp: 'Headless Browser CDP',
     pickerEscHint: 'Esc to exit',
     pickerHoverGuide: 'Hover over any window and click to bind, or drag anywhere to crop a custom region',
+    pickerClickToBind: 'Click to bind',
+    pickerQuickBind: 'Select',
     pickerDragRegionLabel: 'Custom Region',
     pickerRegionCustomTitle: 'Custom Region',
     pickerDisplaysSection: 'Displays',

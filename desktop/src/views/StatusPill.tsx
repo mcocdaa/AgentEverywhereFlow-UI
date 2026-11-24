@@ -50,13 +50,13 @@ export function StatusPill({
 
   const activeApproval = liveApproval ?? simulatedApproval
 
-  // Resize native pill window smoothly when approval drawer opens/closes
+  // Resize native pill window smoothly (with shadow-bleed margins) when approval drawer opens/closes
   useEffect(() => {
     if (!inNativeTauri) return
     if (activeApproval) {
-      void resizePillWindow(392, 114)
+      void resizePillWindow(440, 156)
     } else {
-      void resizePillWindow(360, 44)
+      void resizePillWindow(408, 84)
     }
   }, [activeApproval, inNativeTauri])
 
@@ -130,7 +130,12 @@ export function StatusPill({
               setStep(nextStep)
             }
 
+            const nestedTarget =
+              payload.target && typeof payload.target === 'object'
+                ? (payload.target as { title?: unknown })
+                : null
             const nextLabel =
+              (typeof nestedTarget?.title === 'string' && nestedTarget.title) ||
               (typeof payload.title === 'string' && payload.title) ||
               (typeof payload.label === 'string' && payload.label) ||
               ev.label
@@ -248,7 +253,7 @@ export function StatusPill({
     t.pillApprovalNeeded
 
   return (
-    <div className="flex w-full justify-center">
+    <div className="flex w-full justify-center px-6 pt-3 pb-7">
       <div
         className={`aef-glass-subtle aef-smooth-transition overflow-hidden text-slate-100 ${
           activeApproval ? 'w-[392px] rounded-2xl' : 'w-[360px] rounded-full'

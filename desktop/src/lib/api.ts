@@ -7,8 +7,20 @@ import type {
   PermissionMode,
   RegionSpec,
   SessionDetail,
+  SwitchTargetRequest,
+  SwitchTargetResponse,
   TargetInfo,
 } from './types'
+
+export class ApiError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
 
 export const DEMO_TARGETS: TargetInfo[] = [
   {
@@ -107,7 +119,7 @@ class DesktopApiClient {
       } catch {
         // ignore JSON parse failure
       }
-      throw new Error(detail)
+      throw new ApiError(detail, res.status)
     }
     return res.json() as Promise<T>
   }
@@ -166,11 +178,11 @@ class DesktopApiClient {
           t.target_type === 'window' &&
           !t.is_minimized &&
           x >= t.rect.x &&
-          x <= t.rect.x + t.rect.width &&
+          x <= t.rect.x + Math.min(t.rect.width, 620) &&
           y >= t.rect.y &&
-          y <= t.rect.y + t.rect.height,
+          y <= t.rect.y + Math.min(t.rect.height, 400),
       )
-      return hit ?? DEMO_TARGETS[1]
+      return hit ?? DEMO_TARGETS[0]
     }
     const params = new URLSearchParams({
       x: String(Math.round(x)),
@@ -239,6 +251,47 @@ class DesktopApiClient {
       method: 'POST',
       body: JSON.stringify(req),
     })
+  }
+
+  async switchTarget(
+    sessionId: string,
+    req: SwitchTargetRequest,
+  ): Promise<SwitchTargetResponse> {
+    if (!this.baseUrl) {
+      const target =
+        DEMO_TARGETS.find((t) => t.target_id === req.target_id) ?? {
+          target_id: req.target_id || 'display:1',
+          title: req.title || req.region?.title || req.target_id || 'Target',
+          rect: req.region
+            ? {
+                x: req.region.x,
+                y: req.region.y,
+                width: req.region.width,
+                height: req.region.height,
+              }
+            : { x: 110, y: 84, width: 1440, height: 900 },
+        }
+      const serialized = {
+        target_id: target.target_id,
+        title: target.title,
+        rect: target.rect,
+      }
+      return {
+        status: 'ok',
+        context_preserved: true,
+        turn_count: 1,
+        backend: req.cdp_ws_url ? 'cdp' : 'os',
+        target: serialized,
+        targets: [serialized],
+      }
+    }
+    return this.request<SwitchTargetResponse>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/target`,
+      {
+        method: 'POST',
+        body: JSON.stringify(req),
+      },
+    )
   }
 
   async sendMessage(sessionId: string, instruction: string, maxSteps = 50): Promise<void> {

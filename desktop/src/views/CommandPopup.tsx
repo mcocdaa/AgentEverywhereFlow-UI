@@ -13,23 +13,25 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CornerDownRight,
   Download,
   Globe,
   Minimize2,
+  Minus,
   Plus,
   RefreshCw,
+  RotateCcw,
   Settings,
   ShieldAlert,
   Square,
   Terminal,
-  Trash2,
   X,
 } from 'lucide-react'
 import { CopyCommandButton } from '../components/CopyCommandButton'
 import { AEFlowMark, EnterReturnIcon, TargetTypeIcon } from '../components/Icons'
 import { InlineConfigDrawer } from '../components/InlineConfigDrawer'
 import type { Locale, Translations } from '../i18n/translations'
-import { DEMO_TARGETS, desktopApi } from '../lib/api'
+import { ApiError, DEMO_TARGETS, desktopApi } from '../lib/api'
 import {
   bootstrapViaUv,
   collapseToPill,
@@ -39,6 +41,7 @@ import {
   isTauri,
   onPreviewAction,
   openStudioInBrowser,
+  quitApp,
   resizeCommandWindow,
   restartDaemon,
   showPicker,
@@ -57,6 +60,7 @@ import type {
   RegionSpec,
   SessionEvent,
   TargetInfo,
+  TargetType,
 } from '../lib/types'
 import { useToolbarRoving } from '../lib/useToolbarRoving'
 
@@ -70,12 +74,18 @@ interface ActionChipItem {
 
 interface ConversationEntry {
   id: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'system'
   text: string
   reasoning?: string
   actions?: ActionChipItem[]
   status?: 'streaming' | 'running' | 'completed' | 'aborted' | 'error'
   error?: string
+  meta?: {
+    kind: 'target_switch'
+    targetTitle: string
+    targetType?: TargetType
+    extraCount?: number
+  }
 }
 
 interface SlashCommandItem {
@@ -173,19 +183,41 @@ export function CommandPopup({
   const [expandedReasoning, setExpandedReasoning] = useState<Record<string, boolean>>({})
   const [showConfigDrawer, setShowConfigDrawer] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
+  const [scrollHints, setScrollHints] = useState<{ top: boolean; bottom: boolean }>({
+    top: false,
+    bottom: false,
+  })
 
   const cardRef = useRef<HTMLDivElement | null>(null)
   const toolbarRef = useRef<HTMLDivElement | null>(null)
   const formRef = useRef<HTMLFormElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const streamScrollRef = useRef<HTMLDivElement | null>(null)
   const streamEndRef = useRef<HTMLDivElement | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const previewTimersRef = useRef<number[]>([])
+  const sessionIdRef = useRef<string | null>(sessionId)
+  const isRunningRef = useRef<boolean>(isRunning)
+  const pendingSwitchRef = useRef<Promise<void> | null>(null)
+
+  sessionIdRef.current = sessionId
+  isRunningRef.current = isRunning
 
   const inputId = useId()
   useToolbarRoving(toolbarRef)
 
   const primaryTarget = selectedTargets[0] ?? null
+
+  const updateScrollHints = useCallback(() => {
+    const el = streamScrollRef.current
+    if (!el) {
+      setScrollHints((prev) => (prev.top || prev.bottom ? { top: false, bottom: false } : prev))
+      return
+    }
+    const top = el.scrollTop > 4
+    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight > 4
+    setScrollHints((prev) => (prev.top === top && prev.bottom === bottom ? prev : { top, bottom }))
+  }, [])
 
   // Hydrate real default target from live daemon so first-run submit never sends mock DEMO_TARGETS
   const hydrateLiveDefaultTarget = useCallback(async () => {
@@ -243,26 +275,101 @@ export function CommandPopup({
     void initDaemon()
   }, [initDaemon])
 
+  // Apply target selection from VisualPicker while preserving active session & conversation context
+  const applySelection = useCallback(
+    (sel: PickerSelectionPayload) => {
+      if (sel.targets.length > 0) {
+        const primary = sel.targets[0]
+        const targetIds =
+          sel.targets.length > 1 ? sel.targets.map((item) => item.target_id) : undefined
+        const cdpWsUrl = sel.cdpTarget?.ws_url ?? primary.cdp_ws_url
+
+        setSelectedTargets(sel.targets)
+        setSelectedRegion(sel.region)
+        setSelectedCdpWsUrl(cdpWsUrl)
+        onSelectionChange?.(sel)
+
+        // Preserve active sessionId & rebind targets live on the backend
+        const activeSessionId = sessionIdRef.current
+        if (activeSessionId && desktopApi.isLive()) {
+          const switchPromise = desktopApi
+            .switchTarget(activeSessionId, {
+              target_id: primary.target_id,
+              target_ids: targetIds,
+              region: sel.region,
+              cdp_ws_url: cdpWsUrl,
+              title: primary.title,
+              replace_targets: true,
+            })
+            .then(() => {})
+            .catch((err) => {
+              // If old session expired (404), gracefully clear sessionId so next turn recreates
+              const msg = err instanceof Error ? err.message : String(err)
+              const isNotFound =
+                (err instanceof ApiError && err.status === 404) ||
+                msg.includes('404') ||
+                msg.toLowerCase().includes('not found')
+              if (isNotFound) {
+                wsRef.current?.close()
+                wsRef.current = null
+                sessionIdRef.current = null
+                setSessionId(null)
+              }
+            })
+            .finally(() => {
+              if (pendingSwitchRef.current === switchPromise) {
+                pendingSwitchRef.current = null
+              }
+            })
+          pendingSwitchRef.current = switchPromise
+        }
+
+        if (isRunningRef.current && primary.rect.width > 0 && primary.rect.height > 0) {
+          void showTargetBorder(
+            primary.rect.x,
+            primary.rect.y,
+            primary.rect.width,
+            primary.rect.height,
+            primary.title,
+          )
+        }
+
+        // Append a clean system divider pill if a conversation is already in progress
+        setEntries((prev) => {
+          if (prev.length === 0) return prev
+          return [
+            ...prev,
+            {
+              id: `sys-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              role: 'system',
+              text: primary.title,
+              meta: {
+                kind: 'target_switch',
+                targetTitle: primary.title,
+                targetType: primary.target_type,
+                extraCount: sel.targets.length > 1 ? sel.targets.length - 1 : 0,
+              },
+            },
+          ]
+        })
+      }
+      window.setTimeout(() => textareaRef.current?.focus(), 40)
+    },
+    [onSelectionChange],
+  )
+
+  const applySelectionRef = useRef(applySelection)
+  applySelectionRef.current = applySelection
+
   // Listen for target selection, daemon status, and bootstrap progress events
   useEffect(() => {
     const cleanups: Array<() => void> = []
-
-    const applySelection = (sel: PickerSelectionPayload) => {
-      if (sel.targets.length > 0) {
-        setSelectedTargets(sel.targets)
-        setSelectedRegion(sel.region)
-        setSelectedCdpWsUrl(sel.cdpTarget?.ws_url)
-        setSessionId(null)
-        onSelectionChange?.(sel)
-      }
-      window.setTimeout(() => textareaRef.current?.focus(), 40)
-    }
 
     if (isTauri()) {
       void tauriListen<string>('aeflow://target-selected', (jsonStr) => {
         try {
           const parsed = JSON.parse(jsonStr) as PickerSelectionPayload
-          applySelection(parsed)
+          applySelectionRef.current(parsed)
         } catch {
           // ignore malformed target payload
         }
@@ -287,7 +394,7 @@ export function CommandPopup({
       cleanups.push(
         onPreviewAction((action) => {
           if (action.type === 'target-selected') {
-            applySelection(action.payload)
+            applySelectionRef.current(action.payload)
           }
         }),
       )
@@ -296,26 +403,32 @@ export function CommandPopup({
     return () => {
       cleanups.forEach((fn) => fn())
     }
-  }, [hydrateLiveDefaultTarget, onSelectionChange])
+  }, [hydrateLiveDefaultTarget])
 
-  // Dynamically resize native Tauri command window smoothly when card height changes
+  // Dynamically resize native Tauri command window smoothly (including 48px vertical shadow bleed)
   useEffect(() => {
     if (!isTauri() || !cardRef.current) return
     const el = cardRef.current
-    const observer = new ResizeObserver((obsEntries) => {
-      const entry = obsEntries[0]
-      if (!entry) return
-      const targetHeight = Math.min(520, Math.max(114, Math.ceil(entry.contentRect.height) + 8))
+    const syncHeight = () => {
+      const cardHeight = el.getBoundingClientRect().height
+      if (cardHeight <= 0) return
+      const targetHeight = Math.min(620, Math.max(156, Math.ceil(cardHeight) + 48))
       void resizeCommandWindow(targetHeight)
+    }
+    syncHeight()
+    const observer = new ResizeObserver(() => {
+      syncHeight()
     })
     observer.observe(el)
     return () => observer.disconnect()
   }, [])
 
-  // Auto-scroll conversation stream to bottom as deltas arrive
+  // Auto-scroll conversation stream to bottom as deltas arrive & refresh scroll affordance hints
   useEffect(() => {
     streamEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
-  }, [entries, pendingApproval])
+    const raf = requestAnimationFrame(() => updateScrollHints())
+    return () => cancelAnimationFrame(raf)
+  }, [entries, pendingApproval, expandedChips, expandedReasoning, updateScrollHints])
 
   // Cleanup WS & preview simulation timers on unmount
   useEffect(() => {
@@ -342,6 +455,7 @@ export function CommandPopup({
       },
       { cmd: '/studio', label: '/studio', desc: t.slashStudioDesc },
       { cmd: '/settings', label: '/settings', desc: t.slashSettingsDesc },
+      { cmd: '/new', label: '/new', desc: t.slashNewDesc },
       { cmd: '/clear', label: '/clear', desc: t.slashClearDesc },
     ],
     [t, mode, permissionMode],
@@ -379,6 +493,27 @@ export function CommandPopup({
     void openStudioInBrowser(desktopApi.getStudioUrl(sessionId))
   }, [sessionId])
 
+  // Intentionally start a brand-new conversation & reset backend session binding
+  const handleNewChat = useCallback(() => {
+    previewTimersRef.current.forEach((id) => window.clearTimeout(id))
+    previewTimersRef.current = []
+    if (isRunningRef.current && sessionIdRef.current && desktopApi.isLive()) {
+      void desktopApi.abortSession(sessionIdRef.current).catch(() => {})
+    }
+    wsRef.current?.close()
+    wsRef.current = null
+    pendingSwitchRef.current = null
+    sessionIdRef.current = null
+    setSessionId(null)
+    setEntries([])
+    setPendingApproval(null)
+    setCurrentStep(0)
+    setIsRunning(false)
+    setScrollHints({ top: false, bottom: false })
+    void hideTargetBorder()
+    window.setTimeout(() => textareaRef.current?.focus(), 20)
+  }, [])
+
   const executeSlashCommand = useCallback(
     (cmd: string) => {
       setInput('')
@@ -398,10 +533,14 @@ export function CommandPopup({
         case '/settings':
           setShowConfigDrawer((prev) => !prev)
           break
+        case '/new':
+          handleNewChat()
+          return
         case '/clear':
           setEntries([])
           setPendingApproval(null)
           setCurrentStep(0)
+          setScrollHints({ top: false, bottom: false })
           if (sessionId && desktopApi.isLive()) {
             void desktopApi.resetSession(sessionId)
           }
@@ -409,7 +548,7 @@ export function CommandPopup({
       }
       window.setTimeout(() => textareaRef.current?.focus(), 20)
     },
-    [handleOpenStudio, handleTogglePermission, permissionMode, sessionId],
+    [handleNewChat, handleOpenStudio, handleTogglePermission, permissionMode, sessionId],
   )
 
   const handleBootstrapUv = useCallback(async () => {
@@ -758,7 +897,12 @@ export function CommandPopup({
       }
 
       try {
-        let activeSessionId = sessionId
+        // Ensure any in-flight cross-window target switch completes before sending the next turn
+        if (pendingSwitchRef.current) {
+          await pendingSwitchRef.current
+        }
+
+        let activeSessionId = sessionIdRef.current
         if (!activeSessionId) {
           const targetIds =
             selectedTargets.length > 1 ? selectedTargets.map((item) => item.target_id) : undefined
@@ -771,6 +915,7 @@ export function CommandPopup({
             permission_mode: permissionMode,
           })
           activeSessionId = created.session_id
+          sessionIdRef.current = created.session_id
           setSessionId(created.session_id)
         }
 
@@ -806,7 +951,7 @@ export function CommandPopup({
         }
       } catch (err) {
         applySessionEvent(assistantId, {
-          session_id: sessionId || 'error',
+          session_id: sessionIdRef.current || 'error',
           event_type: 'error',
           step: 0,
           payload: { error: err instanceof Error ? err.message : String(err) },
@@ -828,7 +973,6 @@ export function CommandPopup({
       selectedCdpWsUrl,
       selectedRegion,
       selectedTargets,
-      sessionId,
       slashCommands,
       slashIndex,
     ],
@@ -960,509 +1104,580 @@ export function CommandPopup({
     : t.pickTargetPrompt
 
   const hasText = input.trim().length > 0
+  const canCollapseToPill = isRunning || entries.length > 0
 
   return (
-    <div className="flex w-full justify-center px-1 py-1">
+    <div className="flex w-full justify-center px-6 pt-4 pb-8">
       <div
         ref={cardRef}
-        className="aef-glass relative w-full max-w-[640px] overflow-hidden rounded-2xl text-slate-100"
+        className="aef-glass relative flex w-full max-w-[640px] flex-col overflow-hidden rounded-[22px] text-slate-100"
       >
         {/* Subtle top ambient hairline accent */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-indigo-400/55 to-transparent"
+          className="pointer-events-none absolute inset-x-10 top-0 z-10 h-px bg-gradient-to-r from-transparent via-indigo-400/55 to-transparent"
         />
 
-        {/* Compact 38px Top Toolbar */}
-        <div
-          ref={toolbarRef}
-          role="toolbar"
-          aria-label={t.commandToolbarAria}
-          {...({ focusgroup: 'toolbar wrap' } as Record<string, string>)}
-          onMouseDown={(e) => {
-            if ((e.target as HTMLElement).closest('button')) return
-            void startWindowDrag()
-          }}
-          className="flex h-[38px] items-center justify-between gap-2 border-b border-white/[0.07] px-2.5 select-none cursor-grab active:cursor-grabbing"
-        >
-          {/* Left: Brand + Target Badge + Add Target */}
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span className="inline-flex items-center justify-center pl-0.5 text-indigo-400 shrink-0">
-              <AEFlowMark className="w-4 h-4" />
-            </span>
+        <div className="flex flex-col divide-y divide-white/[0.07]">
+          {/* 1. Compact 40px Top Toolbar */}
+          <div
+            ref={toolbarRef}
+            role="toolbar"
+            aria-label={t.commandToolbarAria}
+            {...({ focusgroup: 'toolbar wrap' } as Record<string, string>)}
+            onMouseDown={(e) => {
+              if ((e.target as HTMLElement).closest('button')) return
+              void startWindowDrag()
+            }}
+            className="flex h-[40px] items-center justify-between gap-2 px-2.5 select-none cursor-grab active:cursor-grabbing"
+          >
+            {/* Left: Brand + Target Badge + Add Target */}
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="inline-flex items-center justify-center pl-0.5 text-indigo-400 shrink-0">
+                <AEFlowMark className="w-4 h-4" />
+              </span>
 
-            <button
-              type="button"
-              onClick={() => void showPicker()}
-              title={targetSummaryText}
-              className="aef-toolbar-btn aef-smooth-transition inline-flex max-w-[235px] items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.045] px-2 py-1 text-xs font-medium text-slate-200 hover:border-indigo-400/35 hover:bg-white/[0.09] min-w-0"
-            >
-              <TargetTypeIcon
-                type={primaryTarget?.target_type ?? 'window'}
-                className="w-3.5 h-3.5 text-cyan-300/90 shrink-0"
-              />
-              <span className="truncate">{targetSummaryText}</span>
-              {selectedTargets.length > 1 && (
-                <span className="rounded bg-indigo-500/25 px-1 text-[10px] font-semibold text-indigo-200 shrink-0">
-                  +{selectedTargets.length - 1}
-                </span>
-              )}
-              <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" aria-hidden="true" />
-            </button>
-
-            <button
-              type="button"
-              onClick={() => void showPicker()}
-              className="aef-toolbar-btn aef-smooth-transition inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-slate-400 hover:bg-white/[0.07] hover:text-slate-100"
-            >
-              <Plus className="w-3 h-3" aria-hidden="true" />
-              <span>{t.addTarget.replace(/^\+\s*/, '')}</span>
-            </button>
-          </div>
-
-          {/* Right: Auto/Approve segmented toggle, Studio link, Settings, Locale, Collapse */}
-          <div className="flex items-center gap-1 shrink-0">
-            <div
-              role="group"
-              aria-label={t.permGroupAria}
-              className="inline-flex items-center rounded-lg border border-white/10 bg-slate-950/60 p-0.5"
-            >
               <button
                 type="button"
-                aria-pressed={permissionMode === 'auto'}
-                onClick={() => void handleTogglePermission('auto')}
-                className="aef-toolbar-btn aef-smooth-transition rounded-md px-2 py-0.5 text-[11px] font-medium text-slate-400 hover:text-slate-100"
+                onClick={() => void showPicker()}
+                title={targetSummaryText}
+                className="aef-toolbar-btn aef-smooth-transition inline-flex max-w-[205px] items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.045] px-2 py-1 text-xs font-medium text-slate-200 hover:border-indigo-400/35 hover:bg-white/[0.09] min-w-0"
               >
-                {t.permAuto}
+                <TargetTypeIcon
+                  type={primaryTarget?.target_type ?? 'window'}
+                  className="w-3.5 h-3.5 text-cyan-300/90 shrink-0"
+                />
+                <span className="truncate">{targetSummaryText}</span>
+                {selectedTargets.length > 1 && (
+                  <span className="rounded bg-indigo-500/25 px-1 text-[10px] font-semibold text-indigo-200 shrink-0">
+                    +{selectedTargets.length - 1}
+                  </span>
+                )}
+                <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" aria-hidden="true" />
               </button>
+
               <button
                 type="button"
-                aria-pressed={permissionMode === 'manual'}
-                onClick={() => void handleTogglePermission('manual')}
-                className="aef-toolbar-btn aef-smooth-transition rounded-md px-2 py-0.5 text-[11px] font-medium text-slate-400 hover:text-slate-100"
+                onClick={() => void showPicker()}
+                className="aef-toolbar-btn aef-smooth-transition inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-slate-400 hover:bg-white/[0.07] hover:text-slate-100"
               >
-                {t.permManual}
+                <Plus className="w-3 h-3" aria-hidden="true" />
+                <span>{t.addTarget.replace(/^\+\s*/, '')}</span>
               </button>
             </div>
 
-            <span
-              role="separator"
-              aria-orientation="vertical"
-              className="mx-0.5 h-3.5 border-l border-white/10"
-            />
+            {/* Right: Auto/Approve, Studio, Settings, Locale, Collapse/Hide, Close/Quit */}
+            <div className="flex items-center gap-1 shrink-0">
+              <div
+                role="group"
+                aria-label={t.permGroupAria}
+                className="inline-flex items-center rounded-lg border border-white/10 bg-slate-950/60 p-0.5"
+              >
+                <button
+                  type="button"
+                  aria-pressed={permissionMode === 'auto'}
+                  onClick={() => void handleTogglePermission('auto')}
+                  className="aef-toolbar-btn aef-smooth-transition rounded-md px-2 py-0.5 text-[11px] font-medium text-slate-400 hover:text-slate-100"
+                >
+                  {t.permAuto}
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={permissionMode === 'manual'}
+                  onClick={() => void handleTogglePermission('manual')}
+                  className="aef-toolbar-btn aef-smooth-transition rounded-md px-2 py-0.5 text-[11px] font-medium text-slate-400 hover:text-slate-100"
+                >
+                  {t.permManual}
+                </button>
+              </div>
 
-            <button
-              type="button"
-              onClick={handleOpenStudio}
-              className="aef-toolbar-btn aef-smooth-transition inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white"
-            >
-              <span>{t.openStudio}</span>
-              <ArrowUpRight className="w-3 h-3 text-slate-400" aria-hidden="true" />
-            </button>
+              <span
+                role="separator"
+                aria-orientation="vertical"
+                className="mx-0.5 h-3.5 border-l border-white/10"
+              />
 
-            <button
-              type="button"
-              aria-pressed={showConfigDrawer}
-              aria-label={t.settingsAria}
-              title={t.settingsAria}
-              onClick={() => setShowConfigDrawer((prev) => !prev)}
-              className="aef-toolbar-btn aef-smooth-transition inline-flex items-center justify-center rounded-lg px-1.5 text-slate-400 hover:bg-white/[0.08] hover:text-slate-100"
-            >
-              <Settings className="w-3.5 h-3.5" aria-hidden="true" />
-            </button>
-
-            <button
-              type="button"
-              data-action="toggle-locale"
-              data-testid="locale-toggle"
-              aria-label={t.localeSwitchAria}
-              title={t.localeSwitchAria}
-              onClick={onToggleLocale}
-              className="aef-toolbar-btn aef-smooth-transition inline-flex items-center gap-1 rounded-lg px-1.5 text-[11px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white"
-            >
-              <Globe className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-              <span>{t.localeSwitchLabel}</span>
-            </button>
-
-            {(isRunning || entries.length > 0) && (
               <button
                 type="button"
-                aria-label={t.collapseToPillAria}
-                title={t.collapseToPillAria}
-                onClick={() =>
-                  void collapseToPill(
-                    sessionId || 'preview-session',
-                    primaryTarget?.title || t.appName,
-                  )
-                }
+                onClick={handleOpenStudio}
+                className="aef-toolbar-btn aef-smooth-transition inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white"
+              >
+                <span>{t.openStudio}</span>
+                <ArrowUpRight className="w-3 h-3 text-slate-400" aria-hidden="true" />
+              </button>
+
+              <button
+                type="button"
+                aria-pressed={showConfigDrawer}
+                aria-label={t.settingsAria}
+                title={t.settingsAria}
+                onClick={() => setShowConfigDrawer((prev) => !prev)}
                 className="aef-toolbar-btn aef-smooth-transition inline-flex items-center justify-center rounded-lg px-1.5 text-slate-400 hover:bg-white/[0.08] hover:text-slate-100"
               >
-                <Minimize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                <Settings className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
-            )}
-          </div>
-        </div>
 
-        {/* Hero Command Input Row */}
-        <form ref={formRef} onSubmit={(e) => void handleSubmit(e)} className="px-4 py-3">
-          <label htmlFor={inputId} className="sr-only">
-            {t.commandInputLabel}
-          </label>
-          <div className="flex items-end gap-3">
-            <textarea
-              ref={textareaRef}
-              id={inputId}
-              rows={1}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleTextareaKeyDown}
-              placeholder={t.commandPlaceholder}
-              disabled={effectiveMissingBackend}
-              autoFocus
-              className="aef-command-textarea flex-1 bg-transparent py-1 text-[15px] leading-relaxed text-slate-50 placeholder:text-slate-500 focus:outline-none disabled:opacity-45"
-            />
-
-            {isRunning ? (
               <button
                 type="button"
-                onClick={() => void handleStop()}
-                aria-label={t.stopExecution}
-                title={t.stopExecution}
-                className="aef-smooth-transition inline-flex h-8 shrink-0 items-center gap-1.5 rounded-xl border border-rose-400/35 bg-rose-500/20 px-3 text-xs font-medium text-rose-100 hover:bg-rose-500/30"
+                data-action="toggle-locale"
+                data-testid="locale-toggle"
+                aria-label={t.localeSwitchAria}
+                title={t.localeSwitchAria}
+                onClick={onToggleLocale}
+                className="aef-toolbar-btn aef-smooth-transition inline-flex items-center gap-1 rounded-lg px-1.5 text-[11px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white"
               >
-                <Square className="w-3 h-3 fill-current" aria-hidden="true" />
-                <span>{t.stopExecution}</span>
+                <Globe className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+                <span>{t.localeSwitchLabel}</span>
               </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={!hasText || effectiveMissingBackend}
-                aria-label={t.sendActionAria}
-                title={t.sendActionAria}
-                className={`aef-smooth-transition inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border ${
-                  hasText && !effectiveMissingBackend
-                    ? 'border-indigo-400/60 bg-indigo-500 text-white shadow-[0_0_20px_rgba(99,102,241,0.45)] hover:bg-indigo-400'
-                    : 'border-white/10 bg-white/[0.04] text-slate-500 cursor-default'
-                }`}
-              >
-                <EnterReturnIcon className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-        </form>
 
-        {/* Slash Command Menu (`/`) */}
-        {isSlashOpen && filteredSlash.length > 0 && (
-          <div
-            role="listbox"
-            aria-label={t.slashMenuAria}
-            className="aef-fade-in border-t border-white/10 bg-slate-950/65 px-2 py-1.5"
-          >
-            {filteredSlash.map((item, idx) => {
-              const active = idx === slashIndex
-              return (
-                <button
-                  key={item.cmd}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  onMouseEnter={() => setSlashIndex(idx)}
-                  onClick={() => executeSlashCommand(item.cmd)}
-                  className={`aef-smooth-transition flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-xs ${
-                    active ? 'bg-indigo-500/20 text-indigo-100' : 'text-slate-300 hover:bg-white/[0.05]'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <span className="font-mono font-semibold text-indigo-300 shrink-0">
-                      {item.label}
-                    </span>
-                    <span className="truncate text-slate-400">{item.desc}</span>
+              <button
+                type="button"
+                aria-label={canCollapseToPill ? t.collapseToPillAria : t.hideWindowAria}
+                title={canCollapseToPill ? t.collapseToPillAria : t.hideWindowAria}
+                onClick={() => {
+                  if (canCollapseToPill) {
+                    void collapseToPill(
+                      sessionId || 'preview-session',
+                      primaryTarget?.title || t.appName,
+                    )
+                  } else {
+                    void hideCommand()
+                  }
+                }}
+                className="aef-toolbar-btn aef-smooth-transition inline-flex items-center justify-center rounded-lg px-1.5 text-slate-400 hover:bg-white/[0.08] hover:text-slate-100"
+              >
+                {canCollapseToPill ? (
+                  <Minimize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                ) : (
+                  <Minus className="w-3.5 h-3.5" aria-hidden="true" />
+                )}
+              </button>
+
+              <button
+                type="button"
+                aria-label={t.quitAppAria}
+                title={t.quitAppAria}
+                onClick={() => void quitApp()}
+                className="aef-toolbar-btn aef-smooth-transition inline-flex items-center justify-center rounded-lg px-1.5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-200"
+              >
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+
+          {/* 2A. One-Click uv Onboarding Banner (ABOVE input, only when missing_backend) */}
+          {effectiveMissingBackend && (
+            <section
+              aria-label={t.missingBackendTitle}
+              className="aef-fade-in bg-slate-950/65 px-4 py-3.5"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
+                    <h2 className="text-xs font-semibold text-slate-100">{t.missingBackendTitle}</h2>
                   </div>
-                  {item.meta && (
-                    <span className="rounded-md border border-white/10 bg-white/[0.05] px-1.5 py-0.5 text-[10px] text-slate-300 whitespace-nowrap shrink-0">
-                      {item.meta}
-                    </span>
-                  )}
-                </button>
-              )
-            })}
-          </div>
-        )}
-
-        {/* One-Click uv Onboarding Banner (only when missing_backend) */}
-        {effectiveMissingBackend && (
-          <section
-            aria-label={t.missingBackendTitle}
-            className="aef-fade-in border-t border-white/10 bg-slate-950/65 px-4 py-3.5"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
-                  <h2 className="text-xs font-semibold text-slate-100">{t.missingBackendTitle}</h2>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                    {t.missingBackendDesc}
+                  </p>
                 </div>
-                <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                  {t.missingBackendDesc}
+                <button
+                  type="button"
+                  onClick={() =>
+                    void restartDaemon().then((res) => {
+                      setDaemon(res)
+                      desktopApi.setBaseUrl(res.url)
+                    })
+                  }
+                  aria-label={t.restartEngine}
+                  title={t.restartEngine}
+                  className="aef-toolbar-btn aef-smooth-transition inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/5 px-1.5 text-slate-300 hover:bg-white/10 hover:text-white"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                </button>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={bootstrapping}
+                  onClick={() => void handleBootstrapUv()}
+                  className="aef-smooth-transition inline-flex items-center gap-1.5 rounded-xl bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white shadow-md hover:bg-indigo-400 disabled:opacity-60 whitespace-nowrap shrink-0"
+                >
+                  <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>{bootstrapping ? t.installingViaUv : t.installViaUv}</span>
+                </button>
+
+                <div className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-slate-900/80 px-2.5 py-1 text-[11px] text-slate-300">
+                  <Terminal className="w-3 h-3 text-slate-500 shrink-0" aria-hidden="true" />
+                  <code className="font-mono text-cyan-200/95">
+                    {daemon?.install_hint || 'uv tool install agenteverywhereflow'}
+                  </code>
+                  <CopyCommandButton
+                    text={daemon?.install_hint || 'uv tool install agenteverywhereflow'}
+                    ariaLabel={t.copyCommandAria}
+                    copiedLabel={t.copied}
+                    failedLabel={t.copyFailed}
+                  />
+                </div>
+              </div>
+
+              {bootstrapLog && (
+                <p className="mt-2 font-mono text-[11px] text-indigo-300/90">{bootstrapLog}</p>
+              )}
+              {bootstrapError && (
+                <p role="alert" className="mt-2 text-[11px] text-rose-300">
+                  {bootstrapError}
                 </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => void restartDaemon().then((res) => {
-                  setDaemon(res)
-                  desktopApi.setBaseUrl(res.url)
-                })}
-                aria-label={t.restartEngine}
-                title={t.restartEngine}
-                className="aef-toolbar-btn aef-smooth-transition inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/5 px-1.5 text-slate-300 hover:bg-white/10 hover:text-white"
-              >
-                <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-              </button>
-            </div>
+              )}
+            </section>
+          )}
 
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                disabled={bootstrapping}
-                onClick={() => void handleBootstrapUv()}
-                className="aef-smooth-transition inline-flex items-center gap-1.5 rounded-xl bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white shadow-md hover:bg-indigo-400 disabled:opacity-60 whitespace-nowrap shrink-0"
-              >
-                <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{bootstrapping ? t.installingViaUv : t.installViaUv}</span>
-              </button>
+          {/* 2B. Inline Quick-Config Drawer (ABOVE input, when API key unset or toggled) */}
+          {showConfigDrawer && !effectiveMissingBackend && (
+            <InlineConfigDrawer
+              config={config}
+              t={t}
+              missingKeyBanner={config?.api_key_set === false}
+              onSave={handleSaveConfig}
+              onClose={() => setShowConfigDrawer(false)}
+            />
+          )}
 
-              <div className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-slate-900/80 px-2.5 py-1 text-[11px] text-slate-300">
-                <Terminal className="w-3 h-3 text-slate-500 shrink-0" aria-hidden="true" />
-                <code className="font-mono text-cyan-200/95">
-                  {daemon?.install_hint || 'uv tool install agenteverywhereflow'}
-                </code>
-                <CopyCommandButton
-                  text={daemon?.install_hint || 'uv tool install agenteverywhereflow'}
-                  ariaLabel={t.copyCommandAria}
-                  copiedLabel={t.copied}
-                  failedLabel={t.copyFailed}
+          {/* 2C. Conversational Execution Stream (ABOVE bottom input composer) */}
+          {entries.length > 0 && !effectiveMissingBackend && (
+            <div className="aef-fade-in bg-slate-950/40">
+              <div className="relative">
+                {/* Scrollability top edge affordance hint */}
+                <div
+                  aria-hidden="true"
+                  className={`pointer-events-none absolute inset-x-0 top-0 z-10 h-5 bg-gradient-to-b from-slate-950/85 to-transparent transition-opacity duration-150 ${
+                    scrollHints.top ? 'opacity-100' : 'opacity-0'
+                  }`}
                 />
-              </div>
-            </div>
 
-            {bootstrapLog && (
-              <p className="mt-2 font-mono text-[11px] text-indigo-300/90">{bootstrapLog}</p>
-            )}
-            {bootstrapError && (
-              <p role="alert" className="mt-2 text-[11px] text-rose-300">
-                {bootstrapError}
-              </p>
-            )}
-          </section>
-        )}
+                <div
+                  ref={streamScrollRef}
+                  onScroll={updateScrollHints}
+                  className="max-h-[300px] space-y-3 overflow-y-auto px-4 py-3"
+                >
+                  {entries.map((entry) => {
+                    if (entry.role === 'user') {
+                      return (
+                        <div key={entry.id} className="flex justify-end">
+                          <div className="max-w-[85%] rounded-2xl rounded-tr-sm border border-indigo-400/25 bg-indigo-500/15 px-3 py-1.5 text-xs leading-relaxed text-indigo-50">
+                            {entry.text}
+                          </div>
+                        </div>
+                      )
+                    }
 
-        {/* Inline Quick-Config Drawer (when API key unset or toggled) */}
-        {showConfigDrawer && !effectiveMissingBackend && (
-          <InlineConfigDrawer
-            config={config}
-            t={t}
-            missingKeyBanner={config?.api_key_set === false}
-            onSave={handleSaveConfig}
-            onClose={() => setShowConfigDrawer(false)}
-          />
-        )}
-
-        {/* Smoothly Expanded Conversational Execution Stream */}
-        {entries.length > 0 && !effectiveMissingBackend && (
-          <div className="aef-fade-in border-t border-white/[0.08] bg-slate-950/45">
-            <div className="max-h-[296px] space-y-3 overflow-y-auto px-4 py-3">
-              {entries.map((entry) => {
-                if (entry.role === 'user') {
-                  return (
-                    <div key={entry.id} className="flex justify-end">
-                      <div className="max-w-[85%] rounded-2xl rounded-tr-sm border border-indigo-400/25 bg-indigo-500/15 px-3 py-1.5 text-xs leading-relaxed text-indigo-50">
-                        {entry.text}
-                      </div>
-                    </div>
-                  )
-                }
-
-                const reasoningOpen = expandedReasoning[entry.id] ?? false
-
-                return (
-                  <div key={entry.id} className="space-y-2">
-                    {/* Collapsible Reasoning Delta Block */}
-                    {entry.reasoning && (
-                      <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] px-2.5 py-1.5">
-                        <button
-                          type="button"
-                          aria-expanded={reasoningOpen}
-                          onClick={() =>
-                            setExpandedReasoning((prev) => ({
-                              ...prev,
-                              [entry.id]: !reasoningOpen,
-                            }))
-                          }
-                          className="flex w-full items-center gap-1.5 text-left text-[11px] font-medium text-slate-400 hover:text-slate-200"
-                        >
-                          {reasoningOpen ? (
-                            <ChevronDown className="w-3 h-3 shrink-0" aria-hidden="true" />
-                          ) : (
-                            <ChevronRight className="w-3 h-3 shrink-0" aria-hidden="true" />
-                          )}
-                          <span className="whitespace-nowrap shrink-0">{t.thinkingLabel}</span>
-                          {!reasoningOpen && (
-                            <span className="truncate font-normal text-slate-500">
-                              — {entry.reasoning}
+                    if (entry.role === 'system') {
+                      const targetTitle = entry.meta?.targetTitle ?? entry.text
+                      const extraCount = entry.meta?.extraCount ?? 0
+                      return (
+                        <div key={entry.id} className="flex items-center gap-2 py-0.5">
+                          <span className="h-px flex-1 bg-white/[0.07]" aria-hidden="true" />
+                          <div className="inline-flex max-w-[92%] items-center gap-1.5 rounded-full border border-cyan-400/20 bg-cyan-500/[0.08] px-2.5 py-0.5 text-[11px] text-cyan-200/95">
+                            <CornerDownRight
+                              className="w-3 h-3 text-cyan-300/85 shrink-0"
+                              aria-hidden="true"
+                            />
+                            <span className="truncate">
+                              {t.targetSwitchedPrefix}
+                              <strong className="font-medium text-cyan-100">{targetTitle}</strong>
+                              {extraCount > 0 ? ` +${extraCount}` : ''}
+                              {t.targetSwitchedSuffix}
                             </span>
-                          )}
-                        </button>
-                        {reasoningOpen && (
-                          <p className="mt-1.5 whitespace-pre-wrap text-[11px] leading-relaxed text-slate-400">
-                            {entry.reasoning}
+                          </div>
+                          <span className="h-px flex-1 bg-white/[0.07]" aria-hidden="true" />
+                        </div>
+                      )
+                    }
+
+                    const reasoningOpen = expandedReasoning[entry.id] ?? false
+
+                    return (
+                      <div key={entry.id} className="space-y-2">
+                        {/* Collapsible Reasoning Delta Block */}
+                        {entry.reasoning && (
+                          <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] px-2.5 py-1.5">
+                            <button
+                              type="button"
+                              aria-expanded={reasoningOpen}
+                              onClick={() =>
+                                setExpandedReasoning((prev) => ({
+                                  ...prev,
+                                  [entry.id]: !reasoningOpen,
+                                }))
+                              }
+                              className="flex w-full items-center gap-1.5 text-left text-[11px] font-medium text-slate-400 hover:text-slate-200"
+                            >
+                              {reasoningOpen ? (
+                                <ChevronDown className="w-3 h-3 shrink-0" aria-hidden="true" />
+                              ) : (
+                                <ChevronRight className="w-3 h-3 shrink-0" aria-hidden="true" />
+                              )}
+                              <span className="whitespace-nowrap shrink-0">{t.thinkingLabel}</span>
+                              {!reasoningOpen && (
+                                <span className="truncate font-normal text-slate-500">
+                                  — {entry.reasoning}
+                                </span>
+                              )}
+                            </button>
+                            {reasoningOpen && (
+                              <p className="mt-1.5 whitespace-pre-wrap text-[11px] leading-relaxed text-slate-400">
+                                {entry.reasoning}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Compact Collapsible Action Chips */}
+                        {entry.actions && entry.actions.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {entry.actions.map((chip) => {
+                              const open = expandedChips[chip.id] ?? false
+                              return (
+                                <div key={chip.id} className="max-w-full">
+                                  <button
+                                    type="button"
+                                    aria-expanded={open}
+                                    onClick={() =>
+                                      setExpandedChips((prev) => ({ ...prev, [chip.id]: !open }))
+                                    }
+                                    className="aef-smooth-transition inline-flex max-w-full items-center gap-1.5 rounded-lg border border-white/10 bg-slate-900/75 px-2 py-1 font-mono text-[11px] text-slate-300 hover:border-indigo-400/35 hover:text-white"
+                                  >
+                                    <span
+                                      className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                                        chip.status === 'executed'
+                                          ? 'bg-emerald-400'
+                                          : 'bg-cyan-400'
+                                      }`}
+                                      aria-hidden="true"
+                                    />
+                                    <span className="text-slate-500 shrink-0">
+                                      {t.stepPrefix} {chip.step}
+                                    </span>
+                                    <span className="truncate">{chip.summary}</span>
+                                  </button>
+                                  {open && (
+                                    <pre className="mt-1 overflow-x-auto rounded-lg border border-white/10 bg-slate-950/90 p-2 font-mono text-[11px] text-cyan-200/90">
+                                      <code>{chip.detail}</code>
+                                    </pre>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+
+                        {/* Assistant Conversational Text / Status */}
+                        {entry.text ? (
+                          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-slate-100">
+                            {entry.text}
+                          </p>
+                        ) : entry.status === 'streaming' || entry.status === 'running' ? (
+                          <div className="flex items-center gap-2 text-xs text-slate-400">
+                            <span className="aef-pulse-dot h-1.5 w-1.5 rounded-full bg-indigo-400" />
+                            <span>{t.noOutputYet}</span>
+                          </div>
+                        ) : null}
+
+                        {entry.error && (
+                          <p
+                            role="alert"
+                            className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-2.5 py-1.5 text-xs text-rose-200"
+                          >
+                            {entry.error}
                           </p>
                         )}
                       </div>
-                    )}
+                    )
+                  })}
 
-                    {/* Compact Collapsible Action Chips */}
-                    {entry.actions && entry.actions.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {entry.actions.map((chip) => {
-                          const open = expandedChips[chip.id] ?? false
-                          return (
-                            <div key={chip.id} className="max-w-full">
-                              <button
-                                type="button"
-                                aria-expanded={open}
-                                onClick={() =>
-                                  setExpandedChips((prev) => ({ ...prev, [chip.id]: !open }))
-                                }
-                                className="aef-smooth-transition inline-flex max-w-full items-center gap-1.5 rounded-lg border border-white/10 bg-slate-900/75 px-2 py-1 font-mono text-[11px] text-slate-300 hover:border-indigo-400/35 hover:text-white"
-                              >
-                                <span
-                                  className={`h-1.5 w-1.5 rounded-full shrink-0 ${
-                                    chip.status === 'executed'
-                                      ? 'bg-emerald-400'
-                                      : 'bg-cyan-400'
-                                  }`}
-                                  aria-hidden="true"
-                                />
-                                <span className="text-slate-500 shrink-0">
-                                  {t.stepPrefix} {chip.step}
-                                </span>
-                                <span className="truncate">{chip.summary}</span>
-                              </button>
-                              {open && (
-                                <pre className="mt-1 overflow-x-auto rounded-lg border border-white/10 bg-slate-950/90 p-2 font-mono text-[11px] text-cyan-200/90">
-                                  <code>{chip.detail}</code>
-                                </pre>
-                              )}
-                            </div>
-                          )
-                        })}
+                  {/* Inline Manual Approval Bar */}
+                  {pendingApproval && (
+                    <div className="aef-fade-in rounded-xl border border-amber-400/30 bg-amber-950/30 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-200">
+                            <ShieldAlert
+                              className="w-3.5 h-3.5 text-amber-400 shrink-0"
+                              aria-hidden="true"
+                            />
+                            <span>{t.approvalRequiredTitle}</span>
+                          </div>
+                          <p className="mt-1 truncate font-mono text-[11px] text-amber-100/90">
+                            {pendingApproval.code_snippet ||
+                              pendingApproval.description ||
+                              pendingApproval.action}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => void handleApprovalDecision(false)}
+                            className="aef-smooth-transition inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-xs font-medium text-slate-200 hover:border-rose-400/40 hover:bg-rose-500/20 hover:text-rose-100 whitespace-nowrap shrink-0"
+                          >
+                            <X className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>{t.rejectAction}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleApprovalDecision(true)}
+                            className="aef-smooth-transition inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-3 py-1 text-xs font-semibold text-slate-950 hover:bg-emerald-400 whitespace-nowrap shrink-0"
+                          >
+                            <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>{t.approveAction}</span>
+                          </button>
+                        </div>
                       </div>
-                    )}
-
-                    {/* Assistant Conversational Text / Status */}
-                    {entry.text ? (
-                      <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-slate-100">
-                        {entry.text}
-                      </p>
-                    ) : entry.status === 'streaming' || entry.status === 'running' ? (
-                      <div className="flex items-center gap-2 text-xs text-slate-400">
-                        <span className="aef-pulse-dot h-1.5 w-1.5 rounded-full bg-indigo-400" />
-                        <span>{t.noOutputYet}</span>
-                      </div>
-                    ) : null}
-
-                    {entry.error && (
-                      <p
-                        role="alert"
-                        className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-2.5 py-1.5 text-xs text-rose-200"
-                      >
-                        {entry.error}
-                      </p>
-                    )}
-                  </div>
-                )
-              })}
-
-              {/* Inline Manual Approval Bar */}
-              {pendingApproval && (
-                <div className="aef-fade-in rounded-xl border border-amber-400/30 bg-amber-950/30 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-200">
-                        <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-hidden="true" />
-                        <span>{t.approvalRequiredTitle}</span>
-                      </div>
-                      <p className="mt-1 truncate font-mono text-[11px] text-amber-100/90">
-                        {pendingApproval.code_snippet ||
-                          pendingApproval.description ||
-                          pendingApproval.action}
-                      </p>
                     </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => void handleApprovalDecision(false)}
-                        className="aef-smooth-transition inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-xs font-medium text-slate-200 hover:border-rose-400/40 hover:bg-rose-500/20 hover:text-rose-100 whitespace-nowrap shrink-0"
-                      >
-                        <X className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>{t.rejectAction}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleApprovalDecision(true)}
-                        className="aef-smooth-transition inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-3 py-1 text-xs font-semibold text-slate-950 hover:bg-emerald-400 whitespace-nowrap shrink-0"
-                      >
-                        <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>{t.approveAction}</span>
-                      </button>
-                    </div>
-                  </div>
+                  )}
+
+                  <div ref={streamEndRef} />
                 </div>
-              )}
 
-              <div ref={streamEndRef} />
-            </div>
-
-            {/* Quiet Footer Status Strip */}
-            <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-1.5 text-[11px] text-slate-400">
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className={`h-1.5 w-1.5 rounded-full shrink-0 ${
-                    pendingApproval
-                      ? 'aef-pulse-dot bg-amber-400'
-                      : isRunning
-                        ? 'aef-pulse-dot bg-emerald-400'
-                        : 'bg-slate-500'
-                  }`}
+                {/* Scrollability bottom edge affordance hint */}
+                <div
                   aria-hidden="true"
+                  className={`pointer-events-none absolute inset-x-0 bottom-0 z-10 h-5 bg-gradient-to-t from-slate-950/85 to-transparent transition-opacity duration-150 ${
+                    scrollHints.bottom ? 'opacity-100' : 'opacity-0'
+                  }`}
                 />
-                <span className="truncate">
-                  {pendingApproval
-                    ? t.statusWaitingApproval
-                    : isRunning
-                      ? `${t.statusRunning} · ${t.stepPrefix} ${currentStep}`
-                      : daemon?.version === 'preview'
-                        ? t.daemonDemoMode
-                        : daemon?.mode === 'spawned'
-                          ? t.daemonSpawned
-                          : t.daemonAttached}
-                </span>
-                <span className="text-slate-600">·</span>
-                <span className="text-slate-500">
-                  {mode === 'minimal' ? t.modeMinimal : t.modeGuarded}
-                </span>
               </div>
 
-              <button
-                type="button"
-                onClick={() => executeSlashCommand('/clear')}
-                className="inline-flex items-center gap-1 text-slate-400 hover:text-slate-200 whitespace-nowrap shrink-0"
-              >
-                <Trash2 className="w-3 h-3" aria-hidden="true" />
-                <span>{t.clearConversation}</span>
-              </button>
+              {/* Quiet Status Strip + Explicit New Chat Trigger */}
+              <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-1.5 text-[11px] text-slate-400">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                      pendingApproval
+                        ? 'aef-pulse-dot bg-amber-400'
+                        : isRunning
+                          ? 'aef-pulse-dot bg-emerald-400'
+                          : 'bg-slate-500'
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">
+                    {pendingApproval
+                      ? t.statusWaitingApproval
+                      : isRunning
+                        ? `${t.statusRunning} · ${t.stepPrefix} ${currentStep}`
+                        : daemon?.version === 'preview'
+                          ? t.daemonDemoMode
+                          : daemon?.mode === 'spawned'
+                            ? t.daemonSpawned
+                            : t.daemonAttached}
+                  </span>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-slate-500">
+                    {mode === 'minimal' ? t.modeMinimal : t.modeGuarded}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleNewChat}
+                  className="aef-smooth-transition inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-slate-400 hover:bg-white/[0.06] hover:text-slate-100 whitespace-nowrap shrink-0"
+                >
+                  <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                  <span>{t.newChat}</span>
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          )}
+
+          {/* 3. Slash Command Menu (`/`) — appears cleanly right ABOVE the bottom input composer */}
+          {isSlashOpen && filteredSlash.length > 0 && (
+            <div
+              role="listbox"
+              aria-label={t.slashMenuAria}
+              className="aef-fade-in bg-slate-950/65 px-2 py-1.5"
+            >
+              {filteredSlash.map((item, idx) => {
+                const active = idx === slashIndex
+                return (
+                  <button
+                    key={item.cmd}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    onMouseEnter={() => setSlashIndex(idx)}
+                    onClick={() => executeSlashCommand(item.cmd)}
+                    className={`aef-smooth-transition flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-xs ${
+                      active
+                        ? 'bg-indigo-500/20 text-indigo-100'
+                        : 'text-slate-300 hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="font-mono font-semibold text-indigo-300 shrink-0">
+                        {item.label}
+                      </span>
+                      <span className="truncate text-slate-400">{item.desc}</span>
+                    </div>
+                    {item.meta && (
+                      <span className="rounded-md border border-white/10 bg-white/[0.05] px-1.5 py-0.5 text-[10px] text-slate-300 whitespace-nowrap shrink-0">
+                        {item.meta}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {/* 4. Bottom-Anchored Hero Command Input Composer */}
+          <form ref={formRef} onSubmit={(e) => void handleSubmit(e)} className="px-4 py-3">
+            <label htmlFor={inputId} className="sr-only">
+              {t.commandInputLabel}
+            </label>
+            <div className="flex items-end gap-3">
+              <textarea
+                ref={textareaRef}
+                id={inputId}
+                rows={1}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleTextareaKeyDown}
+                placeholder={t.commandPlaceholder}
+                disabled={effectiveMissingBackend}
+                autoFocus
+                className="aef-command-textarea flex-1 bg-transparent py-1 text-[15px] leading-relaxed text-slate-50 placeholder:text-slate-500 focus:outline-none disabled:opacity-45"
+              />
+
+              {isRunning ? (
+                <button
+                  type="button"
+                  onClick={() => void handleStop()}
+                  aria-label={t.stopExecution}
+                  title={t.stopExecution}
+                  className="aef-smooth-transition inline-flex h-8 shrink-0 items-center gap-1.5 rounded-xl border border-rose-400/35 bg-rose-500/20 px-3 text-xs font-medium text-rose-100 hover:bg-rose-500/30"
+                >
+                  <Square className="w-3 h-3 fill-current" aria-hidden="true" />
+                  <span>{t.stopExecution}</span>
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!hasText || effectiveMissingBackend}
+                  aria-label={t.sendActionAria}
+                  title={t.sendActionAria}
+                  className={`aef-smooth-transition inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border ${
+                    hasText && !effectiveMissingBackend
+                      ? 'border-indigo-400/60 bg-indigo-500 text-white shadow-[0_0_20px_rgba(99,102,241,0.45)] hover:bg-indigo-400'
+                      : 'border-white/10 bg-white/[0.04] text-slate-500 cursor-default'
+                  }`}
+                >
+                  <EnterReturnIcon className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </form>
+        </div>
       </div>
     </div>
   )

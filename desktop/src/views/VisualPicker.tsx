@@ -13,7 +13,14 @@ import { CopyCommandButton } from '../components/CopyCommandButton'
 import { TargetTypeIcon } from '../components/Icons'
 import type { Translations } from '../i18n/translations'
 import { DEMO_TARGETS, desktopApi } from '../lib/api'
-import { closePickerAndOpenCommand, getSelfPid, isTauri, tauriListen } from '../lib/tauri'
+import {
+  closePickerAndOpenCommand,
+  getPickerGeometry,
+  getSelfPid,
+  isTauri,
+  tauriListen,
+  type PickerGeometry,
+} from '../lib/tauri'
 import type { CdpTargetInfo, Rect, TargetInfo } from '../lib/types'
 import { useToolbarRoving } from '../lib/useToolbarRoving'
 
@@ -23,6 +30,145 @@ interface VisualPickerProps {
   t: Translations
   onToggleLocale: () => void
   daemonUrl?: string | null
+}
+
+const SELF_OVERLAY_TITLES = new Set([
+  'AEFlow Target Picker',
+  'AEFlow Target Border',
+  'AEFlow Status Pill',
+])
+
+function isSelfOverlayTarget(target: TargetInfo, selfPid: number | null): boolean {
+  if (selfPid !== null && target.pid != null && target.pid === selfPid) return true
+  const proc = (target.process_name || '').trim().toLowerCase()
+  if (proc === 'aeflow desktop' || proc === 'aeflow-desktop') return true
+  if (SELF_OVERLAY_TITLES.has(target.title)) return true
+  return false
+}
+
+function pointInRect(x: number, y: number, rect: Rect): boolean {
+  return (
+    rect.width > 0 &&
+    rect.height > 0 &&
+    x >= rect.x &&
+    x <= rect.x + rect.width &&
+    y >= rect.y &&
+    y <= rect.y + rect.height
+  )
+}
+
+function clientToOsPoint(
+  clientX: number,
+  clientY: number,
+  geom: PickerGeometry | null,
+  inNativeTauri: boolean,
+): { x: number; y: number } {
+  if (!inNativeTauri || !geom) {
+    return { x: Math.round(clientX), y: Math.round(clientY) }
+  }
+  if (geom.os_coord_space === 'logical') {
+    return {
+      x: Math.round(geom.logical_x + clientX),
+      y: Math.round(geom.logical_y + clientY),
+    }
+  }
+  const scale = geom.scale_factor || 1
+  return {
+    x: Math.round(geom.physical_x + clientX * scale),
+    y: Math.round(geom.physical_y + clientY * scale),
+  }
+}
+
+function clientRectToOsRect(
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number,
+  geom: PickerGeometry | null,
+  inNativeTauri: boolean,
+): Rect {
+  if (!inNativeTauri || !geom) {
+    return {
+      x: Math.round(rx),
+      y: Math.round(ry),
+      width: Math.round(rw),
+      height: Math.round(rh),
+    }
+  }
+  if (geom.os_coord_space === 'logical') {
+    return {
+      x: Math.round(geom.logical_x + rx),
+      y: Math.round(geom.logical_y + ry),
+      width: Math.round(rw),
+      height: Math.round(rh),
+    }
+  }
+  const scale = geom.scale_factor || 1
+  return {
+    x: Math.round(geom.physical_x + rx * scale),
+    y: Math.round(geom.physical_y + ry * scale),
+    width: Math.round(rw * scale),
+    height: Math.round(rh * scale),
+  }
+}
+
+function osRectToCss(rect: Rect, geom: PickerGeometry | null, inNativeTauri: boolean): Rect {
+  if (!inNativeTauri || !geom) {
+    return {
+      x: rect.x,
+      y: rect.y,
+      width: inNativeTauri ? rect.width : Math.min(rect.width, 620),
+      height: inNativeTauri ? rect.height : Math.min(rect.height, 400),
+    }
+  }
+  if (geom.os_coord_space === 'logical') {
+    return {
+      x: rect.x - geom.logical_x,
+      y: rect.y - geom.logical_y,
+      width: rect.width,
+      height: rect.height,
+    }
+  }
+  const scale = geom.scale_factor || 1
+  return {
+    x: (rect.x - geom.physical_x) / scale,
+    y: (rect.y - geom.physical_y) / scale,
+    width: rect.width / scale,
+    height: rect.height / scale,
+  }
+}
+
+function findTargetAtOsPoint(
+  targets: TargetInfo[],
+  osX: number,
+  osY: number,
+  selfPid: number | null,
+  inNativeTauri: boolean,
+): TargetInfo | null {
+  // 1. Check non-minimized window targets first (preserving front-to-back OS order)
+  for (const target of targets) {
+    if (target.target_type !== 'window' || target.is_minimized) continue
+    if (isSelfOverlayTarget(target, selfPid)) continue
+    const effectiveRect: Rect = inNativeTauri
+      ? target.rect
+      : {
+          x: target.rect.x,
+          y: target.rect.y,
+          width: Math.min(target.rect.width, 620),
+          height: Math.min(target.rect.height, 400),
+        }
+    if (pointInRect(osX, osY, effectiveRect)) {
+      return target
+    }
+  }
+  // 2. Fall back to display targets containing (osX, osY)
+  for (const target of targets) {
+    if (target.target_type !== 'display') continue
+    if (pointInRect(osX, osY, target.rect)) {
+      return target
+    }
+  }
+  return null
 }
 
 interface ThumbnailCardProps {
@@ -52,10 +198,23 @@ function ThumbnailCard({
   }, [thumbUrl])
 
   return (
-    <label
+    <div
+      role="checkbox"
+      tabIndex={0}
+      aria-checked={selected}
+      onClick={() => onToggle(target.target_id)}
       onDoubleClick={(e) => {
         e.preventDefault()
         onBindDirect(target)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === ' ') {
+          e.preventDefault()
+          onToggle(target.target_id)
+        } else if (e.key === 'Enter') {
+          e.preventDefault()
+          onBindDirect(target)
+        }
       }}
       className={`group aef-smooth-transition relative flex cursor-pointer flex-col overflow-hidden rounded-xl border p-2 select-none ${
         selected
@@ -63,13 +222,6 @@ function ThumbnailCard({
           : 'border-white/10 bg-slate-900/72 hover:border-white/25 hover:bg-slate-900/90'
       }`}
     >
-      <input
-        type="checkbox"
-        checked={selected}
-        onChange={() => onToggle(target.target_id)}
-        className="sr-only"
-      />
-
       {/* Thumbnail viewport preview */}
       <div className="relative aspect-[16/10] w-full overflow-hidden rounded-lg border border-white/[0.07] bg-slate-950/90">
         {thumbUrl && !imgFailed ? (
@@ -119,19 +271,36 @@ function ThumbnailCard({
             {t.pickerMinimizedBadge}
           </span>
         )}
+
+        {/* Effortless 1-click Bind pill button on hover/focus */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            onBindDirect(target)
+          }}
+          className="aef-smooth-transition absolute bottom-2 right-2 inline-flex items-center gap-1 rounded-full border border-indigo-300/50 bg-indigo-500/90 px-2.5 py-1 text-[11px] font-semibold text-white opacity-0 shadow-lg backdrop-blur-sm hover:bg-indigo-400 focus:opacity-100 group-hover:opacity-100"
+        >
+          <Check className="w-3 h-3" aria-hidden="true" />
+          <span>{t.pickerQuickBind}</span>
+        </button>
       </div>
 
       {/* Metadata row */}
       <div className="mt-2 flex items-center justify-between gap-2 px-0.5">
         <div className="flex items-center gap-1.5 min-w-0">
-          <TargetTypeIcon type={target.target_type} className="w-3.5 h-3.5 text-cyan-300/85 shrink-0" />
+          <TargetTypeIcon
+            type={target.target_type}
+            className="w-3.5 h-3.5 text-cyan-300/85 shrink-0"
+          />
           <span className="truncate text-xs font-medium text-slate-100">{target.title}</span>
         </div>
         <span className="font-mono text-[10px] text-slate-400 whitespace-nowrap shrink-0">
           {Math.round(target.rect.width)}×{Math.round(target.rect.height)}
         </span>
       </div>
-    </label>
+    </div>
   )
 }
 
@@ -141,6 +310,8 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
   const [cdpTargets, setCdpTargets] = useState<CdpTargetInfo[]>([])
   const [loadingTargets, setLoadingTargets] = useState(false)
   const [loadingCdp, setLoadingCdp] = useState(false)
+  const [selfPid, setSelfPid] = useState<number | null>(null)
+  const [pickerGeom, setPickerGeom] = useState<PickerGeometry | null>(null)
 
   // Hover & Drag-Region state
   const [hoveredTarget, setHoveredTarget] = useState<TargetInfo | null>(null)
@@ -151,9 +322,22 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
   const [selectedIds, setSelectedIds] = useState<string[]>([])
 
   const selfPidRef = useRef<number | null>(null)
+  const pickerGeomRef = useRef<PickerGeometry | null>(null)
+  const targetsRef = useRef<TargetInfo[]>([])
+  const hoveredTargetRef = useRef<TargetInfo | null>(null)
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null)
   const lastProbeAtRef = useRef<number>(0)
+  const probeSeqRef = useRef<number>(0)
   const toolbarRef = useRef<HTMLDivElement | null>(null)
   const inNativeTauri = isTauri()
+
+  targetsRef.current = targets
+  hoveredTargetRef.current = hoveredTarget
+
+  const updatePickerGeom = useCallback((geom: PickerGeometry | null) => {
+    pickerGeomRef.current = geom
+    setPickerGeom(geom)
+  }, [])
 
   useToolbarRoving(toolbarRef)
 
@@ -161,6 +345,7 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
     setLoadingTargets(true)
     try {
       const list = await desktopApi.listTargets()
+      targetsRef.current = list
       setTargets(list)
     } finally {
       setLoadingTargets(false)
@@ -180,8 +365,14 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
   useEffect(() => {
     void getSelfPid().then((pid) => {
       selfPidRef.current = pid
+      setSelfPid(pid)
     })
-  }, [])
+    if (inNativeTauri) {
+      void getPickerGeometry().then((geom) => {
+        if (geom) updatePickerGeom(geom)
+      })
+    }
+  }, [inNativeTauri, updatePickerGeom])
 
   useEffect(() => {
     if (daemonUrl) {
@@ -191,15 +382,24 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
     void refreshCdp()
   }, [daemonUrl, refreshTargets, refreshCdp])
 
-  // Refresh targets/CDP whenever the native picker window is re-opened
+  // Refresh targets/CDP & live window geometry whenever the native picker window is re-opened
   useEffect(() => {
     if (!inNativeTauri) return
     let active = true
     let unlisten: (() => void) | undefined
-    void tauriListen<void>('aeflow://picker-opened', () => {
+    void tauriListen<PickerGeometry | null>('aeflow://picker-opened', (payload) => {
+      if (payload && typeof payload === 'object' && 'os_coord_space' in payload) {
+        updatePickerGeom(payload)
+      } else {
+        void getPickerGeometry().then((geom) => {
+          if (active && geom) updatePickerGeom(geom)
+        })
+      }
       setSelectedIds([])
       setHoveredTarget(null)
+      hoveredTargetRef.current = null
       setDragStart(null)
+      dragStartRef.current = null
       setDragCurrent(null)
       void refreshTargets()
       void refreshCdp()
@@ -214,7 +414,7 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
       active = false
       unlisten?.()
     }
-  }, [inNativeTauri, refreshTargets, refreshCdp])
+  }, [inNativeTauri, refreshTargets, refreshCdp, updatePickerGeom])
 
   // Keyboard shortcuts: Esc to exit, Tab to toggle Hover <-> Grid
   useEffect(() => {
@@ -241,92 +441,159 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
     const y = Math.min(dragStart.y, dragCurrent.y)
     const width = Math.abs(dragCurrent.x - dragStart.x)
     const height = Math.abs(dragCurrent.y - dragStart.y)
-    if (width < 8 && height < 8) return null
+    if (Math.hypot(width, height) < 12 || width < 8 || height < 8) return null
     return { x, y, width, height }
   }, [dragStart, dragCurrent])
 
-  // Throttled (60ms) cursor hit-testing in Hover & Drag-Region mode
+  const dragOsRect: Rect | null = useMemo(() => {
+    if (!dragRect) return null
+    return clientRectToOsRect(
+      dragRect.x,
+      dragRect.y,
+      dragRect.width,
+      dragRect.height,
+      pickerGeom,
+      inNativeTauri,
+    )
+  }, [dragRect, pickerGeom, inNativeTauri])
+
+  const hoveredCssRect: Rect | null = useMemo(() => {
+    if (!hoveredTarget) return null
+    return osRectToCss(hoveredTarget.rect, pickerGeom, inNativeTauri)
+  }, [hoveredTarget, pickerGeom, inNativeTauri])
+
+  // Instant local hit-test + throttled (60ms) backend z-order refinement in Hover & Drag-Region mode
   const handleCanvasMouseMove = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
       if (mode !== 'hover') return
 
-      if (dragStart) {
+      if (dragStartRef.current) {
         setDragCurrent({ x: event.clientX, y: event.clientY })
         return
+      }
+
+      if ((event.target as HTMLElement).closest('[data-picker-chrome]')) return
+
+      const osPt = clientToOsPoint(
+        event.clientX,
+        event.clientY,
+        pickerGeomRef.current,
+        inNativeTauri,
+      )
+
+      // Zero-latency local hit-test so highlight appears immediately on cursor entry
+      const localHit = findTargetAtOsPoint(
+        targetsRef.current,
+        osPt.x,
+        osPt.y,
+        selfPidRef.current,
+        inNativeTauri,
+      )
+      if (localHit) {
+        hoveredTargetRef.current = localHit
+        setHoveredTarget((prev) => (prev?.target_id === localHit.target_id ? prev : localHit))
       }
 
       const now = performance.now()
       if (now - lastProbeAtRef.current < 60) return
       lastProbeAtRef.current = now
 
-      const probeX = inNativeTauri ? event.screenX : event.clientX
-      const probeY = inNativeTauri ? event.screenY : event.clientY
-
+      const seq = ++probeSeqRef.current
       void desktopApi
-        .targetAtPoint(probeX, probeY, selfPidRef.current)
+        .targetAtPoint(osPt.x, osPt.y, selfPidRef.current)
         .then((hit) => {
-          setHoveredTarget(hit)
+          if (seq !== probeSeqRef.current || dragStartRef.current) return
+          if (hit && !isSelfOverlayTarget(hit, selfPidRef.current)) {
+            hoveredTargetRef.current = hit
+            setHoveredTarget((prev) => (prev?.target_id === hit.target_id ? prev : hit))
+          }
         })
         .catch(() => {})
     },
-    [mode, dragStart, inNativeTauri],
+    [mode, inNativeTauri],
   )
 
   const handleCanvasMouseDown = (event: MouseEvent<HTMLDivElement>) => {
     if (mode !== 'hover' || event.button !== 0) return
     if ((event.target as HTMLElement).closest('[data-picker-chrome]')) return
-    setDragStart({ x: event.clientX, y: event.clientY })
-    setDragCurrent({ x: event.clientX, y: event.clientY })
+    const pt = { x: event.clientX, y: event.clientY }
+    dragStartRef.current = pt
+    setDragStart(pt)
+    setDragCurrent(pt)
   }
 
-  const handleCanvasMouseUp = (event: MouseEvent<HTMLDivElement>) => {
-    if (mode !== 'hover' || !dragStart) return
+  const handleCanvasMouseUp = async (event: MouseEvent<HTMLDivElement>) => {
+    if (mode !== 'hover' || !dragStartRef.current) return
 
-    const dx = Math.abs(event.clientX - dragStart.x)
-    const dy = Math.abs(event.clientY - dragStart.y)
+    const start = dragStartRef.current
+    const dx = Math.abs(event.clientX - start.x)
+    const dy = Math.abs(event.clientY - start.y)
+    const dragDist = Math.hypot(dx, dy)
 
-    if (dx >= 10 && dy >= 10) {
-      // Custom Region crop created!
-      const rx = Math.round(Math.min(dragStart.x, event.clientX))
-      const ry = Math.round(Math.min(dragStart.y, event.clientY))
-      const rw = Math.round(dx)
-      const rh = Math.round(dy)
-      const screenOffsetX = inNativeTauri ? window.screenX : 0
-      const screenOffsetY = inNativeTauri ? window.screenY : 0
-      const physX = rx + screenOffsetX
-      const physY = ry + screenOffsetY
+    dragStartRef.current = null
+    setDragStart(null)
+    setDragCurrent(null)
 
-      const regionTitle = `${t.pickerRegionCustomTitle} (${rw}×${rh})`
+    if (dragDist >= 12 && dx >= 8 && dy >= 8) {
+      // Custom Region crop created in exact OS coordinates (logical on macOS, physical on Win/Linux)
+      const rx = Math.min(start.x, event.clientX)
+      const ry = Math.min(start.y, event.clientY)
+      const osRect = clientRectToOsRect(rx, ry, dx, dy, pickerGeomRef.current, inNativeTauri)
+
+      const regionTitle = `${t.pickerRegionCustomTitle} (${osRect.width}×${osRect.height})`
       const regionTarget: TargetInfo = {
-        target_id: `region:${physX},${physY},${rw},${rh}`,
+        target_id: `region:${osRect.x},${osRect.y},${osRect.width},${osRect.height}`,
         target_type: 'region',
         title: regionTitle,
         native_handle: 0,
         process_name: 'region',
         is_minimized: false,
-        rect: { x: physX, y: physY, width: rw, height: rh },
+        rect: osRect,
       }
-      setDragStart(null)
-      setDragCurrent(null)
-      void closePickerAndOpenCommand({
+      await closePickerAndOpenCommand({
         targets: [regionTarget],
         region: {
-          x: physX,
-          y: physY,
-          width: rw,
-          height: rh,
+          x: osRect.x,
+          y: osRect.y,
+          width: osRect.width,
+          height: osRect.height,
           title: regionTitle,
-          parent_target_id: hoveredTarget?.target_id,
+          parent_target_id: hoveredTargetRef.current?.target_id,
         },
       })
       return
     }
 
-    setDragStart(null)
-    setDragCurrent(null)
+    // Click: bind hovered window/display reliably (local fallback + one-shot backend probe if needed)
+    const osPt = clientToOsPoint(
+      event.clientX,
+      event.clientY,
+      pickerGeomRef.current,
+      inNativeTauri,
+    )
+    let chosen =
+      hoveredTargetRef.current ??
+      findTargetAtOsPoint(
+        targetsRef.current,
+        osPt.x,
+        osPt.y,
+        selfPidRef.current,
+        inNativeTauri,
+      )
 
-    if (hoveredTarget) {
-      void closePickerAndOpenCommand({ targets: [hoveredTarget] })
+    if (!chosen) {
+      try {
+        const hit = await desktopApi.targetAtPoint(osPt.x, osPt.y, selfPidRef.current)
+        if (hit && !isSelfOverlayTarget(hit, selfPidRef.current)) {
+          chosen = hit
+        }
+      } catch {
+        // ignore transient lookup error
+      }
+    }
+
+    if (chosen) {
+      await closePickerAndOpenCommand({ targets: [chosen] })
     }
   }
 
@@ -365,15 +632,18 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
     [targets],
   )
   const windowTargets = useMemo(
-    () => targets.filter((item) => item.target_type !== 'display'),
-    [targets],
+    () =>
+      targets.filter(
+        (item) => item.target_type !== 'display' && !isSelfOverlayTarget(item, selfPid),
+      ),
+    [targets, selfPid],
   )
 
   return (
     <div
       onMouseMove={handleCanvasMouseMove}
       onMouseDown={handleCanvasMouseDown}
-      onMouseUp={handleCanvasMouseUp}
+      onMouseUp={(e) => void handleCanvasMouseUp(e)}
       className={`fixed inset-0 select-none overflow-hidden ${
         mode === 'hover'
           ? 'cursor-crosshair bg-slate-950/32'
@@ -486,24 +756,20 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
       {/* Mode 1: Hover Highlight & Custom Drag-Region Selection */}
       {mode === 'hover' && (
         <>
-          {/* Hovered OS window highlight box */}
-          {hoveredTarget && !dragRect && (
+          {/* Hovered OS window highlight box (aligned pixel-for-pixel via osRectToCss) */}
+          {hoveredTarget && hoveredCssRect && !dragRect && (
             <div
               style={{
-                transform: `translate3d(${hoveredTarget.rect.x}px, ${hoveredTarget.rect.y}px, 0)`,
-                width: inNativeTauri
-                  ? hoveredTarget.rect.width
-                  : Math.min(hoveredTarget.rect.width, 620),
-                height: inNativeTauri
-                  ? hoveredTarget.rect.height
-                  : Math.min(hoveredTarget.rect.height, 400),
+                transform: `translate3d(${hoveredCssRect.x}px, ${hoveredCssRect.y}px, 0)`,
+                width: hoveredCssRect.width,
+                height: hoveredCssRect.height,
               }}
               className="pointer-events-none fixed left-0 top-0 z-20 rounded-xl border-2 border-cyan-400/90 bg-indigo-500/12 shadow-[0_0_32px_rgba(34,211,238,0.28)] transition-[transform,width,height] duration-75 ease-out"
             >
-              {/* Floating Window Identity Pill (docks inside when near top monitor edge/toolbar) */}
+              {/* Floating Window Identity Pill (docks inside when near top picker edge/toolbar) */}
               <div
-                className={`absolute inline-flex max-w-[420px] items-center gap-1.5 rounded-full border border-cyan-300/40 bg-slate-950/90 px-3 py-1 text-xs font-medium text-slate-100 shadow-xl backdrop-blur-md ${
-                  hoveredTarget.rect.y < 110 ? 'left-3 top-3' : '-top-9 left-0'
+                className={`absolute inline-flex max-w-[460px] items-center gap-1.5 rounded-full border border-cyan-300/40 bg-slate-950/90 px-3 py-1 text-xs font-medium text-slate-100 shadow-xl backdrop-blur-md ${
+                  hoveredCssRect.y < 110 ? 'left-3 top-3' : '-top-9 left-0'
                 }`}
               >
                 <TargetTypeIcon
@@ -515,12 +781,15 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
                 <span className="font-mono text-[11px] text-cyan-200 whitespace-nowrap shrink-0">
                   {Math.round(hoveredTarget.rect.width)}×{Math.round(hoveredTarget.rect.height)}
                 </span>
+                <span className="ml-1 rounded-full bg-cyan-400/15 px-1.5 py-0.5 text-[10px] font-medium text-cyan-200 whitespace-nowrap shrink-0">
+                  {t.pickerClickToBind}
+                </span>
               </div>
             </div>
           )}
 
           {/* Custom Drag-Region Crop Box */}
-          {dragRect && (
+          {dragRect && dragOsRect && (
             <div
               style={{
                 transform: `translate3d(${dragRect.x}px, ${dragRect.y}px, 0)`,
@@ -529,11 +798,15 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
               }}
               className="pointer-events-none fixed left-0 top-0 z-30 rounded-lg border-2 border-emerald-400 bg-emerald-400/12 shadow-[0_0_28px_rgba(16,185,129,0.3)]"
             >
-              <div className="absolute -top-8 left-0 inline-flex items-center gap-1.5 rounded-full border border-emerald-300/45 bg-slate-950/92 px-2.5 py-0.5 font-mono text-[11px] font-medium text-emerald-200 shadow-lg whitespace-nowrap">
+              <div
+                className={`absolute inline-flex items-center gap-1.5 rounded-full border border-emerald-300/45 bg-slate-950/92 px-2.5 py-0.5 font-mono text-[11px] font-medium text-emerald-200 shadow-lg whitespace-nowrap ${
+                  dragRect.y < 80 ? 'left-2 top-2' : '-top-8 left-0'
+                }`}
+              >
                 <span>{t.pickerDragRegionLabel}</span>
                 <span>·</span>
                 <span>
-                  {Math.round(dragRect.width)} × {Math.round(dragRect.height)}
+                  {dragOsRect.width} × {dragOsRect.height}
                 </span>
               </div>
             </div>
@@ -660,7 +933,10 @@ export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPick
                   disabled={loadingCdp}
                   className="aef-toolbar-btn aef-smooth-transition inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-200 hover:bg-white/10 disabled:opacity-50"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${loadingCdp ? 'animate-spin' : ''}`} aria-hidden="true" />
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 ${loadingCdp ? 'animate-spin' : ''}`}
+                    aria-hidden="true"
+                  />
                   <span>{t.pickerCdpRefresh}</span>
                 </button>
               </div>

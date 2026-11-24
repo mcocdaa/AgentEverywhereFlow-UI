@@ -13,10 +13,38 @@ export interface TargetInfo {
   title: string
   native_handle: number
   process_name: string
+  pid?: number | null
   is_minimized: boolean
   rect: Rect
   cdp_ws_url?: string
   url?: string
+}
+
+export interface SwitchTargetRequest {
+  target_id?: string
+  target_ids?: string[]
+  region?: RegionSpec
+  cdp_ws_url?: string
+  cdp_endpoint?: string
+  title?: string
+  replace_targets?: boolean
+}
+
+export interface SwitchTargetResponse {
+  status: string
+  context_preserved: boolean
+  turn_count: number
+  backend: 'os' | 'cdp'
+  target: {
+    target_id: string
+    title: string
+    rect: Rect
+  }
+  targets: Array<{
+    target_id: string
+    title: string
+    rect: Rect
+  }>
 }
 
 export interface RegionSpec {

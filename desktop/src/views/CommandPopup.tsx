@@ -94,11 +94,26 @@ interface CommandPopupProps {
   onSelectionChange?: (selection: PickerSelectionPayload) => void
 }
 
+const DEMO_TARGET_IDS = new Set(DEMO_TARGETS.map((item) => item.target_id))
+
 function summarizeAction(payload: Record<string, unknown>): { summary: string; detail: string } {
-  const code = typeof payload.code === 'string' ? payload.code.trim() : ''
-  const action = typeof payload.action === 'string' ? payload.action : ''
-  const toolName = typeof payload.tool === 'string' ? payload.tool : action
-  const params = payload.params && typeof payload.params === 'object' ? payload.params : null
+  // Unwrap Guarded Mode action_proposed envelope: { type: "guarded", payload: { action, ... } }
+  const nested =
+    payload.payload && typeof payload.payload === 'object'
+      ? (payload.payload as Record<string, unknown>)
+      : null
+  const src = nested ?? payload
+
+  const code = typeof src.code === 'string' ? src.code.trim() : ''
+  const action = typeof src.action === 'string' ? src.action : ''
+  const toolName = typeof src.tool === 'string' ? src.tool : action
+  const rawParams = src.params && typeof src.params === 'object' ? src.params : null
+  const restParams =
+    !rawParams && nested && action
+      ? Object.fromEntries(Object.entries(nested).filter(([k]) => k !== 'action'))
+      : null
+  const params =
+    rawParams ?? (restParams && Object.keys(restParams).length > 0 ? restParams : null)
 
   if (code) {
     const firstLine = code.split('\n').find((l) => l.trim().length > 0) || code
@@ -114,10 +129,10 @@ function summarizeAction(payload: Record<string, unknown>): { summary: string; d
       detail: serialized ? JSON.stringify({ action: toolName, params }, null, 2) : toolName,
     }
   }
-  const fallback = JSON.stringify(payload)
+  const fallback = JSON.stringify(src)
   return {
     summary: fallback.slice(0, 38),
-    detail: JSON.stringify(payload, null, 2),
+    detail: JSON.stringify(src, null, 2),
   }
 }
 
@@ -135,8 +150,8 @@ export function CommandPopup({
   const [bootstrapLog, setBootstrapLog] = useState<string | null>(null)
   const [bootstrapError, setBootstrapError] = useState<string | null>(null)
 
-  const [selectedTargets, setSelectedTargets] = useState<TargetInfo[]>(
-    initialSelection?.targets ?? [DEMO_TARGETS[1]],
+  const [selectedTargets, setSelectedTargets] = useState<TargetInfo[]>(() =>
+    initialSelection?.targets ?? (isTauri() ? [] : [DEMO_TARGETS[1]]),
   )
   const [selectedRegion, setSelectedRegion] = useState<RegionSpec | undefined>(
     initialSelection?.region,
@@ -172,6 +187,25 @@ export function CommandPopup({
 
   const primaryTarget = selectedTargets[0] ?? null
 
+  // Hydrate real default target from live daemon so first-run submit never sends mock DEMO_TARGETS
+  const hydrateLiveDefaultTarget = useCallback(async () => {
+    if (!desktopApi.isLive()) return
+    try {
+      const liveTargets = await desktopApi.listTargets()
+      if (liveTargets.length === 0) return
+      const preferred =
+        liveTargets.find((item) => item.target_type === 'window' && !item.is_minimized) ??
+        liveTargets[0]
+      setSelectedTargets((prev) => {
+        const isUnsetOrDemo =
+          prev.length === 0 || prev.every((item) => DEMO_TARGET_IDS.has(item.target_id))
+        return isUnsetOrDemo ? [preferred] : prev
+      })
+    } catch {
+      // ignore transient target list failure
+    }
+  }, [])
+
   // Discover or start local AEFlow daemon on mount
   const initDaemon = useCallback(async () => {
     try {
@@ -180,6 +214,9 @@ export function CommandPopup({
       desktopApi.setBaseUrl(info.url)
 
       if (info.mode !== 'missing_backend') {
+        if (info.url) {
+          void hydrateLiveDefaultTarget()
+        }
         try {
           const cfg = await desktopApi.getConfig()
           setConfig(cfg)
@@ -200,7 +237,7 @@ export function CommandPopup({
         has_uv: false,
       })
     }
-  }, [])
+  }, [hydrateLiveDefaultTarget])
 
   useEffect(() => {
     void initDaemon()
@@ -234,6 +271,9 @@ export function CommandPopup({
       void tauriListen<DaemonDiscoveryResult>('aeflow://daemon-status', (status) => {
         setDaemon(status)
         desktopApi.setBaseUrl(status.url)
+        if (status.url) {
+          void hydrateLiveDefaultTarget()
+        }
       }).then((fn) => cleanups.push(fn))
 
       void tauriListen<string>('aeflow://bootstrap-log', (line) => {
@@ -256,7 +296,7 @@ export function CommandPopup({
     return () => {
       cleanups.forEach((fn) => fn())
     }
-  }, [onSelectionChange])
+  }, [hydrateLiveDefaultTarget, onSelectionChange])
 
   // Dynamically resize native Tauri command window smoothly when card height changes
   useEffect(() => {
@@ -382,6 +422,9 @@ export function CommandPopup({
         setDaemon(res.daemon)
         desktopApi.setBaseUrl(res.daemon.url)
         setBootstrapLog(null)
+        if (res.daemon.url) {
+          void hydrateLiveDefaultTarget()
+        }
       } else {
         setBootstrapError(res.error || t.installFailed)
       }
@@ -390,7 +433,7 @@ export function CommandPopup({
     } finally {
       setBootstrapping(false)
     }
-  }, [t.installFailed, t.installingViaUv])
+  }, [hydrateLiveDefaultTarget, t.installFailed, t.installingViaUv])
 
   const handleSaveConfig = useCallback(async (patch: ConfigPatch) => {
     const updated = await desktopApi.patchConfig(patch)
@@ -508,13 +551,16 @@ export function CommandPopup({
         setIsRunning(false)
         setPendingApproval(null)
         void hideTargetBorder()
-        const finalSummary = String(payload.message ?? payload.summary ?? '')
+        const finalSummary = String(payload.message ?? payload.summary ?? '').trim()
         setEntries((prev) =>
           prev.map((item) =>
             item.id === assistantId
               ? {
                   ...item,
-                  text: item.text || finalSummary,
+                  text:
+                    ev.event_type === 'task_completed'
+                      ? finalSummary || item.text
+                      : item.text || finalSummary,
                   status: 'completed',
                 }
               : item,

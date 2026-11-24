@@ -126,6 +126,37 @@ export async function bootstrapViaUv(): Promise<BootstrapResult> {
   }
 }
 
+export interface PillStateSnapshot {
+  session_id: string
+  label: string
+}
+
+export interface BorderStateSnapshot {
+  label: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export async function getPillState(): Promise<PillStateSnapshot | null> {
+  if (!isTauri()) return null
+  try {
+    return await tauriInvoke<PillStateSnapshot | null>('get_pill_state')
+  } catch {
+    return null
+  }
+}
+
+export async function getBorderState(): Promise<BorderStateSnapshot | null> {
+  if (!isTauri()) return null
+  try {
+    return await tauriInvoke<BorderStateSnapshot | null>('get_border_state')
+  } catch {
+    return null
+  }
+}
+
 export async function getSelfPid(): Promise<number | null> {
   if (!isTauri()) return null
   try {

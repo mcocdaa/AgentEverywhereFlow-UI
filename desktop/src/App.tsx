@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useLocale } from './i18n/useLocale'
-import { isTauri, onPreviewAction } from './lib/tauri'
-import type { DesktopView, PendingApproval, PickerSelectionPayload } from './lib/types'
+import { desktopApi } from './lib/api'
+import { discoverOrStartDaemon, isTauri, onPreviewAction, tauriListen } from './lib/tauri'
+import type {
+  DaemonDiscoveryResult,
+  DesktopView,
+  PendingApproval,
+  PickerSelectionPayload,
+} from './lib/types'
 import { CommandPopup } from './views/CommandPopup'
 import { StatusPill } from './views/StatusPill'
 import { TargetBorder } from './views/TargetBorder'
@@ -20,11 +26,45 @@ function readInitialView(): DesktopView {
 export function App() {
   const { locale, t, toggleLocale } = useLocale()
   const [view, setView] = useState<DesktopView>(readInitialView)
+  const [daemonUrl, setDaemonUrl] = useState<string | null>(() => desktopApi.getBaseUrl())
   const [previewSelection, setPreviewSelection] = useState<PickerSelectionPayload | null>(null)
   const [simMissingBackend, setSimMissingBackend] = useState(false)
   const [simPillApproval, setSimPillApproval] = useState<PendingApproval | null>(null)
 
   const inNativeTauri = isTauri()
+
+  // Hydrate daemon baseUrl in secondary Tauri WebviewWindows (picker/pill) and listen for restarts
+  useEffect(() => {
+    let active = true
+    let unlistenDaemon: (() => void) | undefined
+
+    if (inNativeTauri) {
+      void tauriListen<DaemonDiscoveryResult>('aeflow://daemon-status', (status) => {
+        desktopApi.setBaseUrl(status.url)
+        if (active) setDaemonUrl(status.url)
+      }).then((fn) => {
+        if (!active) {
+          fn()
+        } else {
+          unlistenDaemon = fn
+        }
+      })
+
+      if (view === 'picker' || view === 'pill') {
+        void discoverOrStartDaemon()
+          .then((info) => {
+            desktopApi.setBaseUrl(info.url)
+            if (active) setDaemonUrl(info.url)
+          })
+          .catch(() => {})
+      }
+    }
+
+    return () => {
+      active = false
+      unlistenDaemon?.()
+    }
+  }, [inNativeTauri, view])
 
   useEffect(() => {
     if (inNativeTauri) return
@@ -41,11 +81,11 @@ export function App() {
   if (inNativeTauri) {
     switch (view) {
       case 'picker':
-        return <VisualPicker t={t} onToggleLocale={toggleLocale} />
+        return <VisualPicker t={t} onToggleLocale={toggleLocale} daemonUrl={daemonUrl} />
       case 'border':
         return <TargetBorder t={t} />
       case 'pill':
-        return <StatusPill t={t} />
+        return <StatusPill t={t} daemonUrl={daemonUrl} />
       case 'command':
       default:
         return (
@@ -61,7 +101,7 @@ export function App() {
   // Plain Browser Preview mode (`npm run dev`): interactive showcase for all 4 views
   return (
     <div className="aef-preview-canvas relative min-h-screen w-full overflow-hidden">
-      {view === 'picker' && <VisualPicker t={t} onToggleLocale={toggleLocale} />}
+      {view === 'picker' && <VisualPicker t={t} onToggleLocale={toggleLocale} daemonUrl={daemonUrl} />}
 
       {view === 'command' && (
         <main className="flex min-h-screen w-full items-start justify-center px-4 pt-24 pb-24">
@@ -89,6 +129,7 @@ export function App() {
         <main className="flex min-h-screen w-full items-start justify-center px-4 pt-8">
           <StatusPill
             t={t}
+            daemonUrl={daemonUrl}
             initialLabel={previewSelection?.targets[0]?.title || 'Chrome — Q4 Revenue Dashboard'}
             simulatedApproval={simPillApproval}
             onClearSimulatedApproval={() => setSimPillApproval(null)}

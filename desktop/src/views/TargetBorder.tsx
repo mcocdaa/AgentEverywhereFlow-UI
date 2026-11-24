@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Translations } from '../i18n/translations'
-import { isTauri, onPreviewAction, tauriListen } from '../lib/tauri'
+import { getBorderState, isTauri, onPreviewAction, tauriListen } from '../lib/tauri'
 import { AEFlowMark } from '../components/Icons'
 
 interface TargetBorderProps {
@@ -14,17 +14,29 @@ interface BorderEventPayload {
   height?: number
 }
 
-export function TargetBorder({ t, initialLabel = 'Chrome — Q4 Revenue Dashboard' }: TargetBorderProps) {
-  const [label, setLabel] = useState(initialLabel)
+export function TargetBorder({ t, initialLabel }: TargetBorderProps) {
+  const inNativeTauri = isTauri()
+  const [label, setLabel] = useState(
+    initialLabel !== undefined ? initialLabel : inNativeTauri ? '' : 'Chrome — Q4 Revenue Dashboard',
+  )
 
   useEffect(() => {
+    let active = true
     let cleanup: (() => void) | undefined
 
-    if (isTauri()) {
+    if (inNativeTauri) {
+      void getBorderState().then((snapshot) => {
+        if (!active || !snapshot?.label) return
+        setLabel(snapshot.label)
+      })
       void tauriListen<BorderEventPayload>('aeflow://border-update', (payload) => {
         if (payload.label) setLabel(payload.label)
       }).then((unlisten) => {
-        cleanup = unlisten
+        if (!active) {
+          unlisten()
+        } else {
+          cleanup = unlisten
+        }
       })
     } else {
       cleanup = onPreviewAction((action) => {
@@ -35,11 +47,10 @@ export function TargetBorder({ t, initialLabel = 'Chrome — Q4 Revenue Dashboar
     }
 
     return () => {
+      active = false
       cleanup?.()
     }
-  }, [])
-
-  const inNativeTauri = isTauri()
+  }, [inNativeTauri])
 
   return (
     <div

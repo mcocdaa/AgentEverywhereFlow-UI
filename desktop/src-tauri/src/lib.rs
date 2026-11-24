@@ -10,9 +10,10 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager, RunEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use windows::{
-    close_picker_and_open_command, collapse_to_pill, expand_from_pill, get_self_pid, hide_command,
-    hide_target_border, open_studio_in_browser, resize_command_window, resize_pill_window,
-    show_picker, show_target_border, toggle_command_window,
+    close_picker_and_open_command, collapse_to_pill, expand_from_pill, get_border_state,
+    get_pill_state, get_self_pid, hide_command, hide_target_border, open_studio_in_browser,
+    resize_command_window, resize_pill_window, show_picker, show_target_border,
+    toggle_command_window, OverlayState,
 };
 
 fn register_summon_shortcut(app: &tauri::App) {
@@ -106,6 +107,7 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .manage(daemon_state)
+        .manage(OverlayState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -121,6 +123,8 @@ pub fn run() {
             restart_daemon,
             bootstrap_via_uv,
             get_self_pid,
+            get_border_state,
+            get_pill_state,
             show_picker,
             close_picker_and_open_command,
             resize_command_window,

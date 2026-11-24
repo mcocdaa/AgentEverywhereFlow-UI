@@ -13,7 +13,7 @@ import { CopyCommandButton } from '../components/CopyCommandButton'
 import { TargetTypeIcon } from '../components/Icons'
 import type { Translations } from '../i18n/translations'
 import { DEMO_TARGETS, desktopApi } from '../lib/api'
-import { closePickerAndOpenCommand, getSelfPid, isTauri } from '../lib/tauri'
+import { closePickerAndOpenCommand, getSelfPid, isTauri, tauriListen } from '../lib/tauri'
 import type { CdpTargetInfo, Rect, TargetInfo } from '../lib/types'
 import { useToolbarRoving } from '../lib/useToolbarRoving'
 
@@ -22,12 +22,14 @@ type PickerMode = 'hover' | 'grid' | 'cdp'
 interface VisualPickerProps {
   t: Translations
   onToggleLocale: () => void
+  daemonUrl?: string | null
 }
 
 interface ThumbnailCardProps {
   target: TargetInfo
   selected: boolean
   t: Translations
+  daemonUrl?: string | null
   onToggle: (id: string) => void
   onBindDirect: (target: TargetInfo) => void
 }
@@ -36,11 +38,18 @@ function ThumbnailCard({
   target,
   selected,
   t,
+  daemonUrl,
   onToggle,
   onBindDirect,
 }: ThumbnailCardProps) {
   const [imgFailed, setImgFailed] = useState(false)
-  const thumbUrl = desktopApi.getThumbnailUrl(target.target_id, 360)
+  const thumbUrl = daemonUrl
+    ? `${daemonUrl.replace(/\/$/, '')}/api/v1/targets/${encodeURIComponent(target.target_id)}/thumbnail?width=360&quality=70`
+    : desktopApi.getThumbnailUrl(target.target_id, 360)
+
+  useEffect(() => {
+    setImgFailed(false)
+  }, [thumbUrl])
 
   return (
     <label
@@ -126,7 +135,7 @@ function ThumbnailCard({
   )
 }
 
-export function VisualPicker({ t, onToggleLocale }: VisualPickerProps) {
+export function VisualPicker({ t, onToggleLocale, daemonUrl = null }: VisualPickerProps) {
   const [mode, setMode] = useState<PickerMode>('hover')
   const [targets, setTargets] = useState<TargetInfo[]>([])
   const [cdpTargets, setCdpTargets] = useState<CdpTargetInfo[]>([])
@@ -172,9 +181,40 @@ export function VisualPicker({ t, onToggleLocale }: VisualPickerProps) {
     void getSelfPid().then((pid) => {
       selfPidRef.current = pid
     })
+  }, [])
+
+  useEffect(() => {
+    if (daemonUrl) {
+      desktopApi.setBaseUrl(daemonUrl)
+    }
     void refreshTargets()
     void refreshCdp()
-  }, [refreshTargets, refreshCdp])
+  }, [daemonUrl, refreshTargets, refreshCdp])
+
+  // Refresh targets/CDP whenever the native picker window is re-opened
+  useEffect(() => {
+    if (!inNativeTauri) return
+    let active = true
+    let unlisten: (() => void) | undefined
+    void tauriListen<void>('aeflow://picker-opened', () => {
+      setSelectedIds([])
+      setHoveredTarget(null)
+      setDragStart(null)
+      setDragCurrent(null)
+      void refreshTargets()
+      void refreshCdp()
+    }).then((fn) => {
+      if (!active) {
+        fn()
+      } else {
+        unlisten = fn
+      }
+    })
+    return () => {
+      active = false
+      unlisten?.()
+    }
+  }, [inNativeTauri, refreshTargets, refreshCdp])
 
   // Keyboard shortcuts: Esc to exit, Tab to toggle Hover <-> Grid
   useEffect(() => {
@@ -536,6 +576,7 @@ export function VisualPicker({ t, onToggleLocale }: VisualPickerProps) {
                           target={item}
                           selected={selectedIds.includes(item.target_id)}
                           t={t}
+                          daemonUrl={daemonUrl}
                           onToggle={toggleGridSelection}
                           onBindDirect={(tgt) => void closePickerAndOpenCommand({ targets: [tgt] })}
                         />
@@ -558,6 +599,7 @@ export function VisualPicker({ t, onToggleLocale }: VisualPickerProps) {
                           target={item}
                           selected={selectedIds.includes(item.target_id)}
                           t={t}
+                          daemonUrl={daemonUrl}
                           onToggle={toggleGridSelection}
                           onBindDirect={(tgt) => void closePickerAndOpenCommand({ targets: [tgt] })}
                         />

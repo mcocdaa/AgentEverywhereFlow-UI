@@ -154,7 +154,7 @@ class DesktopApiClient {
     try {
       return await this.request<TargetInfo[]>('/api/v1/targets')
     } catch {
-      return DEMO_TARGETS
+      return []
     }
   }
 

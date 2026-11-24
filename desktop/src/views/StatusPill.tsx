@@ -4,6 +4,7 @@ import type { Translations } from '../i18n/translations'
 import { desktopApi } from '../lib/api'
 import {
   expandFromPill,
+  getPillState,
   hideTargetBorder,
   isTauri,
   onPreviewAction,
@@ -15,6 +16,7 @@ import type { GlobalBusEvent, PendingApproval, SessionState } from '../lib/types
 
 interface StatusPillProps {
   t: Translations
+  daemonUrl?: string | null
   initialSessionId?: string | null
   initialLabel?: string
   simulatedApproval?: PendingApproval | null
@@ -28,14 +30,20 @@ interface PillStateEvent {
 
 export function StatusPill({
   t,
-  initialSessionId = 'preview-session',
-  initialLabel = 'Chrome — Q4 Revenue Dashboard',
+  daemonUrl = null,
+  initialSessionId,
+  initialLabel,
   simulatedApproval = null,
   onClearSimulatedApproval,
 }: StatusPillProps) {
-  const [sessionId, setSessionId] = useState<string | null>(initialSessionId)
-  const [label, setLabel] = useState(initialLabel)
-  const [step, setStep] = useState(3)
+  const inNativeTauri = isTauri()
+  const [sessionId, setSessionId] = useState<string | null>(
+    initialSessionId !== undefined ? initialSessionId : inNativeTauri ? null : 'preview-session',
+  )
+  const [label, setLabel] = useState(
+    initialLabel !== undefined ? initialLabel : inNativeTauri ? '' : 'Chrome — Q4 Revenue Dashboard',
+  )
+  const [step, setStep] = useState(inNativeTauri ? 1 : 3)
   const [state, setState] = useState<SessionState>('running')
   const [liveApproval, setLiveApproval] = useState<PendingApproval | null>(null)
   const [busyAction, setBusyAction] = useState(false)
@@ -44,18 +52,24 @@ export function StatusPill({
 
   // Resize native pill window smoothly when approval drawer opens/closes
   useEffect(() => {
-    if (!isTauri()) return
+    if (!inNativeTauri) return
     if (activeApproval) {
       void resizePillWindow(392, 114)
     } else {
       void resizePillWindow(360, 44)
     }
-  }, [activeApproval])
+  }, [activeApproval, inNativeTauri])
 
-  // Listen to pill-state IPC or browser preview actions
+  // Hydrate initial pill state from Rust managed OverlayState + listen to subsequent IPC updates
   useEffect(() => {
+    let active = true
     let cleanup: (() => void) | undefined
-    if (isTauri()) {
+    if (inNativeTauri) {
+      void getPillState().then((snapshot) => {
+        if (!active || !snapshot) return
+        setSessionId(snapshot.session_id)
+        setLabel(snapshot.label)
+      })
       void tauriListen<PillStateEvent>('aeflow://pill-state', (payload) => {
         setSessionId(payload.session_id)
         setLabel(payload.label)
@@ -63,7 +77,11 @@ export function StatusPill({
         setStep(1)
         setLiveApproval(null)
       }).then((unlisten) => {
-        cleanup = unlisten
+        if (!active) {
+          unlisten()
+        } else {
+          cleanup = unlisten
+        }
       })
     } else {
       cleanup = onPreviewAction((action) => {
@@ -75,12 +93,16 @@ export function StatusPill({
       })
     }
     return () => {
+      active = false
       cleanup?.()
     }
-  }, [])
+  }, [inNativeTauri])
 
   // Subscribe to global backend event bus WS `/api/v1/events`
   useEffect(() => {
+    if (daemonUrl) {
+      desktopApi.setBaseUrl(daemonUrl)
+    }
     const wsUrl = desktopApi.getGlobalEventsWsUrl()
     if (!wsUrl) return
 
@@ -97,29 +119,62 @@ export function StatusPill({
             const ev = JSON.parse(msg.data) as GlobalBusEvent
             if (sessionId && ev.session_id && ev.session_id !== sessionId) return
 
-            if (typeof ev.step === 'number' && ev.step > 0) {
-              setStep(ev.step)
+            const payload = (ev.payload ?? {}) as Record<string, unknown>
+            const nextStep =
+              typeof payload.step === 'number'
+                ? payload.step
+                : typeof ev.step === 'number'
+                  ? ev.step
+                  : null
+            if (nextStep !== null && nextStep > 0) {
+              setStep(nextStep)
             }
-            if (ev.label) setLabel(ev.label)
+
+            const nextLabel =
+              (typeof payload.title === 'string' && payload.title) ||
+              (typeof payload.label === 'string' && payload.label) ||
+              ev.label
+            if (nextLabel) setLabel(nextLabel)
 
             if (ev.event_type === 'approval_required') {
               setState('waiting_approval')
-              const raw = ev.approval ?? (ev.payload as PendingApproval | undefined)
-              setLiveApproval(
-                raw ?? {
-                  action: 'click',
-                  description: String(ev.payload?.description ?? ev.payload?.action ?? 'Action'),
-                },
-              )
+              const raw = ev.approval ?? (ev.payload as Partial<PendingApproval> | undefined)
+              const actionName = String(raw?.action ?? raw?.action_type ?? 'action')
+              setLiveApproval({
+                action: actionName,
+                action_type: typeof raw?.action_type === 'string' ? raw.action_type : undefined,
+                code_snippet: typeof raw?.code_snippet === 'string' ? raw.code_snippet : undefined,
+                description:
+                  typeof raw?.description === 'string'
+                    ? raw.description
+                    : typeof raw?.context === 'string'
+                      ? raw.context
+                      : actionName,
+                params:
+                  raw?.params && typeof raw.params === 'object'
+                    ? raw.params
+                    : payload.details && typeof payload.details === 'object'
+                      ? (payload.details as Record<string, unknown>)
+                      : undefined,
+              })
             } else if (ev.event_type === 'approval_resolved') {
               setLiveApproval(null)
               setState('running')
-            } else if (ev.event_type === 'session_state_changed' && ev.state) {
-              setState(ev.state)
-              if (ev.state !== 'waiting_approval') {
-                setLiveApproval(null)
+            } else if (ev.event_type === 'session_state_changed') {
+              const nextState = (
+                typeof payload.state === 'string' ? payload.state : ev.state
+              ) as SessionState | undefined
+              if (nextState) {
+                setState(nextState)
+                if (nextState !== 'waiting_approval') {
+                  setLiveApproval(null)
+                }
               }
-            } else if (ev.event_type === 'task_completed' || ev.event_type === 'aborted') {
+            } else if (
+              ev.event_type === 'task_completed' ||
+              ev.event_type === 'aborted' ||
+              ev.event_type === 'session_deleted'
+            ) {
               setState(ev.event_type === 'aborted' ? 'aborted' : 'idle')
               setLiveApproval(null)
             }
@@ -145,7 +200,7 @@ export function StatusPill({
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
       ws?.close()
     }
-  }, [sessionId])
+  }, [sessionId, daemonUrl])
 
   const handleStop = useCallback(async () => {
     setBusyAction(true)

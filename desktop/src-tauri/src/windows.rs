@@ -1,7 +1,8 @@
 use serde::Serialize;
+use std::sync::Mutex;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
-    Position, Size, WebviewUrl, WebviewWindowBuilder,
+    Position, Size, State, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_shell::ShellExt;
 
@@ -15,18 +16,34 @@ const COMMAND_MIN_HEIGHT: f64 = 108.0;
 const COMMAND_MAX_HEIGHT: f64 = 540.0;
 
 #[derive(Debug, Clone, Serialize)]
-struct BorderUpdatePayload {
-    label: String,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
+pub struct BorderUpdatePayload {
+    pub label: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct PillStatePayload {
-    session_id: String,
-    label: String,
+pub struct PillStatePayload {
+    pub session_id: String,
+    pub label: String,
+}
+
+#[derive(Default)]
+pub struct OverlayState {
+    pub border: Mutex<Option<BorderUpdatePayload>>,
+    pub pill: Mutex<Option<PillStatePayload>>,
+}
+
+#[tauri::command]
+pub fn get_border_state(state: State<'_, OverlayState>) -> Option<BorderUpdatePayload> {
+    state.border.lock().ok().and_then(|g| g.clone())
+}
+
+#[tauri::command]
+pub fn get_pill_state(state: State<'_, OverlayState>) -> Option<PillStatePayload> {
+    state.pill.lock().ok().and_then(|g| g.clone())
 }
 
 pub fn toggle_command_window(app: &AppHandle) {
@@ -181,6 +198,10 @@ pub fn show_target_border(
         height: safe_h,
     };
 
+    if let Ok(mut guard) = app.state::<OverlayState>().border.lock() {
+        *guard = Some(payload.clone());
+    }
+
     if let Some(border) = app.get_webview_window(BORDER_LABEL) {
         let _ = border.set_ignore_cursor_events(true);
         let _ = border.set_position(Position::Physical(PhysicalPosition::new(
@@ -268,6 +289,10 @@ pub fn collapse_to_pill(
     let pill_h = 44.0;
     let (px, py) = compute_top_center_position(&app, pill_w);
     let payload = PillStatePayload { session_id, label };
+
+    if let Ok(mut guard) = app.state::<OverlayState>().pill.lock() {
+        *guard = Some(payload.clone());
+    }
 
     if let Some(pill) = app.get_webview_window(PILL_LABEL) {
         let _ = pill.set_size(Size::Logical(LogicalSize::new(pill_w, pill_h)));

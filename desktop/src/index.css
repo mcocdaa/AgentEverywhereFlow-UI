@@ -1,0 +1,216 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  accent-color: #6366f1;
+  --aef-glass-bg: rgba(15, 18, 26, 0.88);
+  --aef-glass-bg-elevated: rgba(20, 24, 36, 0.94);
+  --aef-glass-border: rgba(255, 255, 255, 0.1);
+  --aef-glass-border-strong: rgba(255, 255, 255, 0.16);
+  --aef-accent: #6366f1;
+  --aef-accent-cyan: #22d3ee;
+  --aef-emerald: #10b981;
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    min-height: 100%;
+    background: transparent;
+    color: #f1f5f9;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display", "Segoe UI",
+      "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background-color: rgba(99, 102, 241, 0.34);
+    color: #f8fafc;
+  }
+
+  /* Keep scrollbar-width: auto for accessible thumb size; style via scrollbar-color */
+  * {
+    scrollbar-color: rgba(148, 163, 184, 0.38) transparent;
+    scrollbar-width: auto;
+  }
+
+  :focus-visible {
+    outline: 2px solid #818cf8;
+    outline-offset: 2px;
+  }
+
+  input:not([type="range"]):user-invalid,
+  textarea:user-invalid {
+    border-color: rgba(248, 113, 113, 0.7);
+  }
+}
+
+/* Frameless dark glassmorphic surface */
+.aef-glass {
+  background: var(--aef-glass-bg);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  border: 1px solid var(--aef-glass-border);
+  box-shadow:
+    0 24px 64px -12px rgba(2, 6, 23, 0.72),
+    0 0 0 1px rgba(15, 23, 42, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.aef-glass-subtle {
+  background: rgba(15, 18, 26, 0.82);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow:
+    0 14px 36px -8px rgba(2, 6, 23, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* Auto-sizing command textarea using modern field-sizing: content */
+.aef-command-textarea {
+  field-sizing: content;
+  height: auto;
+  width: 100%;
+  min-block-size: 1.5lh;
+  max-block-size: 5lh;
+  resize: none;
+  overflow-y: auto;
+}
+
+@supports not (field-sizing: content) {
+  .aef-command-textarea {
+    min-height: 28px;
+    max-height: 120px;
+    resize: vertical;
+  }
+}
+
+/* Toolbar & icon button baseline sizing & ARIA toggled states */
+.aef-toolbar-btn {
+  min-inline-size: 26px;
+  min-block-size: 26px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.aef-toolbar-btn[aria-pressed="true"] {
+  background-color: rgba(99, 102, 241, 0.24);
+  color: #e0e7ff;
+  box-shadow: inset 0 0 0 1px rgba(129, 140, 248, 0.45);
+}
+
+/* Browser preview backdrop (never shown in Tauri native transparent windows) */
+.aef-preview-canvas {
+  background:
+    radial-gradient(circle at 18% 18%, rgba(99, 102, 241, 0.2), transparent 44%),
+    radial-gradient(circle at 82% 24%, rgba(34, 211, 238, 0.14), transparent 42%),
+    radial-gradient(circle at 50% 85%, rgba(16, 185, 129, 0.1), transparent 46%),
+    linear-gradient(160deg, #070a12 0%, #0d1322 50%, #090d18 100%);
+}
+
+/* Compositor-only animations gated on prefers-reduced-motion: no-preference */
+@keyframes aef-pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.48;
+    transform: scale(0.88);
+  }
+}
+
+@keyframes aef-border-breathe {
+  0%,
+  100% {
+    opacity: 0.96;
+  }
+  50% {
+    opacity: 0.62;
+  }
+}
+
+@keyframes aef-enter-fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.aef-pulse-dot {
+  opacity: 1;
+}
+
+.aef-border-glow {
+  opacity: 0.92;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .aef-pulse-dot {
+    animation: aef-pulse-soft 1.8s ease-in-out infinite;
+  }
+
+  .aef-border-glow {
+    animation: aef-border-breathe 2.6s ease-in-out infinite;
+  }
+
+  .aef-fade-in {
+    animation: aef-enter-fade 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .aef-smooth-transition {
+    transition:
+      background-color 150ms ease,
+      border-color 150ms ease,
+      color 150ms ease,
+      opacity 150ms ease,
+      transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+@media (hover: hover) {
+  .aef-hover-lift:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+  }
+}
+
+@media (forced-colors: active) {
+  .aef-glass,
+  .aef-glass-subtle {
+    border: 1px solid CanvasText;
+  }
+
+  .aef-toolbar-btn[aria-pressed="true"] {
+    outline: 2px solid Highlight;
+    color: ButtonText;
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

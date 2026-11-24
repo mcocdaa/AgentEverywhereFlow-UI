@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api/client'
-import type { ActionMarker, PermissionMode, SessionDetail, SessionSummary } from './api/types'
+import type {
+  ActionMarker,
+  AppConfigResponse,
+  PermissionMode,
+  SessionDetail,
+  SessionSummary,
+} from './api/types'
 import { ApprovalGate } from './components/ApprovalGate'
 import { ChatStream } from './components/ChatStream'
 import { EndpointModal } from './components/EndpointModal'
@@ -8,23 +14,56 @@ import { ExportModal } from './components/ExportModal'
 import { Header } from './components/Header'
 import { NewSessionModal } from './components/NewSessionModal'
 import { PromptInput } from './components/PromptInput'
+import { SettingsModal } from './components/SettingsModal'
 import { ViewportMonitor } from './components/ViewportMonitor'
 import { useSessionSocket } from './hooks/useSessionSocket'
 import { useLanguage } from './i18n/LanguageContext'
 
+function readSessionQueryParam(): string | null {
+  if (typeof window === 'undefined') return null
+  const val = new URLSearchParams(window.location.search).get('session')
+  return val && val.trim() ? val.trim() : null
+}
+
+function syncSessionQueryParam(sessionId: string | null) {
+  if (typeof window === 'undefined') return
+  const url = new URL(window.location.href)
+  if (sessionId) {
+    url.searchParams.set('session', sessionId)
+  } else {
+    url.searchParams.delete('session')
+  }
+  const next = `${url.pathname}${url.search}${url.hash}`
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`
+  if (next !== current) {
+    window.history.replaceState(null, '', next)
+  }
+}
+
 export function App() {
   const { t } = useLanguage()
   const [sessions, setSessions] = useState<SessionSummary[]>([])
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() =>
+    readSessionQueryParam()
+  )
   const [activeSession, setActiveSession] = useState<SessionDetail | null>(null)
   const [backendVersion, setBackendVersion] = useState<string | null>(null)
   const [backendOnline, setBackendOnline] = useState<boolean>(false)
+  const [apiKeyUnconfigured, setApiKeyUnconfigured] = useState<boolean>(false)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('auto')
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [actionMarkers, setActionMarkers] = useState<ActionMarker[]>([])
   const [isNewSessionModalOpen, setIsNewSessionModalOpen] = useState(false)
   const [isExportModalOpen, setIsExportModalOpen] = useState(false)
   const [isEndpointModalOpen, setIsEndpointModalOpen] = useState(false)
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
+
+  const activeSessionIdRef = useRef<string | null>(activeSessionId)
+  const deepLinkPendingRef = useRef<string | null>(readSessionQueryParam())
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId
+  }, [activeSessionId])
 
   // Trigger snapshot refresh
   const triggerScreenshotRefresh = useCallback(() => {
@@ -65,6 +104,7 @@ export function App() {
   const {
     status: connectionStatus,
     events,
+    streaming,
     pendingApproval,
     isExecuting,
     setPendingApproval,
@@ -81,6 +121,17 @@ export function App() {
     handleSessionUpdated
   )
 
+  // Check if backend model API key is configured (non-blocking onboarding hint)
+  const refreshConfigStatus = useCallback(async () => {
+    try {
+      const cfg = await api.getConfig()
+      setApiKeyUnconfigured(!cfg.api_key_set)
+    } catch {
+      // Older backend without /api/v1/config — keep indicator hidden
+      setApiKeyUnconfigured(false)
+    }
+  }, [])
+
   // Load backend status and sessions
   const refreshSessions = useCallback(async () => {
     try {
@@ -88,10 +139,20 @@ export function App() {
       setBackendVersion(health.version)
       setBackendOnline(true)
 
+      void refreshConfigStatus()
+
       const sessionList = await api.listSessions()
       setSessions(sessionList)
 
-      if (sessionList.length > 0 && !activeSessionId) {
+      // Honor ?session=<id> deep-link on initial load before falling back to first session
+      const requestedDeepLink = deepLinkPendingRef.current
+      if (requestedDeepLink) {
+        deepLinkPendingRef.current = null
+        setActiveSessionId(requestedDeepLink)
+        return
+      }
+
+      if (sessionList.length > 0 && !activeSessionIdRef.current) {
         setActiveSessionId(sessionList[0].session_id)
       }
     } catch (e) {
@@ -99,11 +160,20 @@ export function App() {
       setBackendOnline(false)
       setBackendVersion(null)
     }
-  }, [activeSessionId])
+  }, [refreshConfigStatus])
 
   useEffect(() => {
-    refreshSessions()
+    void refreshSessions()
   }, [refreshSessions])
+
+  // Keep URL ?session=<id> in sync once active session resolves
+  useEffect(() => {
+    if (activeSession && activeSession.session_id === activeSessionId) {
+      syncSessionQueryParam(activeSession.session_id)
+    } else if (!activeSessionId) {
+      syncSessionQueryParam(null)
+    }
+  }, [activeSession, activeSessionId])
 
   // Load active session detail when activeSessionId changes
   useEffect(() => {
@@ -161,9 +231,26 @@ export function App() {
 
   // Handle session created from modal
   const handleSessionCreated = async (newId: string) => {
-    await refreshSessions()
     setActiveSessionId(newId)
+    await refreshSessions()
   }
+
+  // Handle switching active bound target for the current session
+  const handleSwitchTarget = useCallback(
+    async (targetId: string) => {
+      if (!activeSessionId) return
+      await api.switchTarget(activeSessionId, targetId)
+      const detail = await api.getSession(activeSessionId)
+      handleSessionUpdated(detail)
+      triggerScreenshotRefresh()
+    },
+    [activeSessionId, handleSessionUpdated, triggerScreenshotRefresh]
+  )
+
+  // Handle config saved from SettingsModal
+  const handleConfigSaved = useCallback((updated: AppConfigResponse) => {
+    setApiKeyUnconfigured(!updated.api_key_set)
+  }, [])
 
   // Handle permission toggle
   const handleTogglePermission = () => {
@@ -229,12 +316,14 @@ export function App() {
         connectionStatus={connectionStatus}
         backendVersion={backendVersion}
         permissionMode={permissionMode}
+        apiKeyUnconfigured={apiKeyUnconfigured}
         onSelectSession={handleSelectSession}
         onOpenNewSessionModal={() => setIsNewSessionModalOpen(true)}
         onTogglePermission={handleTogglePermission}
         onOpenExportModal={() => setIsExportModalOpen(true)}
         onResetSession={handleResetSession}
-        onOpenSettingsModal={() => setIsEndpointModalOpen(true)}
+        onOpenEndpointModal={() => setIsEndpointModalOpen(true)}
+        onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
         onDeleteSession={handleDeleteSession}
         onRenameSession={handleRenameSession}
       />
@@ -249,6 +338,7 @@ export function App() {
             refreshTrigger={refreshTrigger}
             onManualRefresh={triggerScreenshotRefresh}
             onOpenNewSessionModal={() => setIsNewSessionModalOpen(true)}
+            onSwitchTarget={handleSwitchTarget}
           />
         </section>
 
@@ -272,6 +362,7 @@ export function App() {
           <ChatStream
             sessionId={activeSessionId}
             events={events}
+            streaming={streaming}
             isExecuting={isExecuting && !pendingApproval}
           />
 
@@ -293,7 +384,7 @@ export function App() {
         </section>
       </main>
 
-      {/* 4. Modals */}
+      {/* 3. Modals */}
       <NewSessionModal
         isOpen={isNewSessionModalOpen}
         onClose={() => setIsNewSessionModalOpen(false)}
@@ -310,7 +401,13 @@ export function App() {
       <EndpointModal
         isOpen={isEndpointModalOpen}
         onClose={() => setIsEndpointModalOpen(false)}
-        onEndpointChanged={refreshSessions}
+        onEndpointChanged={() => void refreshSessions()}
+      />
+
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        onConfigSaved={handleConfigSaved}
       />
     </div>
   )

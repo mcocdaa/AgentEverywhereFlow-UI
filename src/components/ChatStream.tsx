@@ -13,17 +13,23 @@ import {
   User,
   Zap,
 } from 'lucide-react'
-import type { SessionEvent } from '../api/types'
+import type { SessionEvent, StreamingTextState } from '../api/types'
 import { useLanguage } from '../i18n/LanguageContext'
 import { formatEventText, formatTargetTitle } from '../i18n/translations'
 
 interface ChatStreamProps {
   sessionId?: string | null
   events: SessionEvent[]
+  streaming?: StreamingTextState
   isExecuting: boolean
 }
 
-export const ChatStream: React.FC<ChatStreamProps> = ({ sessionId, events, isExecuting }) => {
+export const ChatStream: React.FC<ChatStreamProps> = ({
+  sessionId,
+  events,
+  streaming,
+  isExecuting,
+}) => {
   const { t, language } = useLanguage()
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -33,8 +39,12 @@ export const ChatStream: React.FC<ChatStreamProps> = ({ sessionId, events, isExe
   const [autoScroll, setAutoScroll] = useState(true)
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({})
 
+  const liveReasoning = streaming?.reasoning || ''
+  const liveTalk = streaming?.talk || ''
+  const hasLiveStream = Boolean(liveReasoning || liveTalk)
+
   // Auto-scroll logic: scroll to top on initial session load so the top OPERATOR bubble is never clipped,
-  // and only scroll to bottom when new events append within the same active session after initial load.
+  // and only scroll to bottom when new events or live tokens append within the same active session.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -51,6 +61,11 @@ export const ChatStream: React.FC<ChatStreamProps> = ({ sessionId, events, isExe
     const prevLen = prevEventsLenRef.current
     prevEventsLenRef.current = events.length
 
+    if (hasLiveStream && autoScroll) {
+      el.scrollTop = el.scrollHeight
+      return
+    }
+
     if (prevLen === 0 || Date.now() - sessionLoadTimeRef.current < 400) {
       el.scrollTop = 0
       return
@@ -59,7 +74,7 @@ export const ChatStream: React.FC<ChatStreamProps> = ({ sessionId, events, isExe
     if (events.length > prevLen && autoScroll) {
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
     }
-  }, [sessionId, events, autoScroll])
+  }, [sessionId, events, liveReasoning, liveTalk, hasLiveStream, autoScroll])
 
   const handleScroll = () => {
     if (!containerRef.current) return
@@ -101,7 +116,7 @@ export const ChatStream: React.FC<ChatStreamProps> = ({ sessionId, events, isExe
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto pt-2.5 lg:pt-3.5 pb-2.5 lg:pb-3 px-3 lg:px-4 space-y-1.5 lg:space-y-2 font-sans text-xs select-text"
     >
-      {events.length === 0 ? (
+      {events.length === 0 && !hasLiveStream ? (
         <div className="h-full flex flex-col items-center justify-center text-center p-8 space-y-3">
           <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center border border-indigo-500/20">
             <Bot className="w-6 h-6" />
@@ -152,9 +167,11 @@ export const ChatStream: React.FC<ChatStreamProps> = ({ sessionId, events, isExe
                     <BrainCircuit className="w-3.5 h-3.5 lg:w-4 lg:h-4" />
                   </div>
                   <div className="flex-1 min-w-0 bg-slate-900 border border-purple-500/20 rounded-2xl rounded-tl-sm overflow-hidden shadow-sm">
-                    <div
+                    <button
+                      type="button"
                       onClick={() => toggleThinking(key)}
-                      className="px-2.5 lg:px-3 py-1 lg:py-1.5 bg-purple-950/20 flex items-center justify-between cursor-pointer select-none border-b border-purple-500/10 hover:bg-purple-950/30 transition"
+                      aria-expanded={isExpanded}
+                      className="w-full px-2.5 lg:px-3 py-1 lg:py-1.5 bg-purple-950/20 flex items-center justify-between cursor-pointer select-none border-b border-purple-500/10 hover:bg-purple-950/30 transition"
                     >
                       <div className="flex items-center gap-1.5 lg:gap-2 text-purple-300 font-semibold text-[11px] min-w-0">
                         <Sparkles className="w-3.5 h-3.5 text-purple-400 shrink-0" />
@@ -170,7 +187,7 @@ export const ChatStream: React.FC<ChatStreamProps> = ({ sessionId, events, isExe
                           <ChevronRight className="w-3.5 h-3.5 text-purple-400 shrink-0" />
                         )}
                       </div>
-                    </div>
+                    </button>
                     {isExpanded && (
                       <div className="p-1.5 lg:p-2 text-[10px] lg:text-[11px] text-slate-200 whitespace-pre-wrap leading-snug bg-slate-950/60 font-sans">
                         {thinking}
@@ -414,10 +431,59 @@ export const ChatStream: React.FC<ChatStreamProps> = ({ sessionId, events, isExe
         })
       )}
 
+      {/* Live Streaming Reasoning Delta Card */}
+      {liveReasoning && (
+        <div className="flex gap-2.5 lg:gap-3 items-start animate-in fade-in duration-150">
+          <div className="w-6 h-6 lg:w-7 lg:h-7 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center shrink-0 border border-purple-500/30 mt-0.5">
+            <BrainCircuit className="w-3.5 h-3.5 lg:w-4 lg:h-4 animate-pulse" aria-hidden="true" />
+          </div>
+          <div className="flex-1 min-w-0 bg-slate-900 border border-purple-500/30 rounded-2xl rounded-tl-sm overflow-hidden shadow-sm">
+            <div className="px-2.5 lg:px-3 py-1 lg:py-1.5 bg-purple-950/25 flex items-center justify-between border-b border-purple-500/15">
+              <div className="flex items-center gap-1.5 text-purple-300 font-semibold text-[11px] min-w-0">
+                <Sparkles className="w-3.5 h-3.5 text-purple-400 shrink-0" aria-hidden="true" />
+                <span className="truncate">{t('stream.agentReasoning')}</span>
+              </div>
+              <span className="text-[10px] text-purple-300/90 font-mono flex items-center gap-1.5 whitespace-nowrap shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+                <span>{t('stream.streaming')}</span>
+              </span>
+            </div>
+            <div className="p-2 text-[10px] lg:text-[11px] text-slate-200 whitespace-pre-wrap leading-snug bg-slate-950/60 font-sans">
+              {liveReasoning}
+              <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-purple-400/80 align-middle animate-pulse" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Live Streaming Talk / Content Delta Bubble */}
+      {liveTalk && (
+        <div className="flex gap-3 items-start animate-in fade-in duration-150">
+          <div className="w-7 h-7 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0 border border-indigo-500/30 mt-0.5">
+            <Bot className="w-4 h-4 animate-pulse" aria-hidden="true" />
+          </div>
+          <div className="flex-1 bg-slate-900 border border-indigo-500/30 rounded-2xl rounded-tl-sm p-3.5 shadow-sm">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <span className="text-[10px] font-semibold text-indigo-300">
+                {t('stream.agent')}
+              </span>
+              <span className="text-[10px] text-indigo-300/90 font-mono flex items-center gap-1.5 whitespace-nowrap shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+                <span>{t('stream.streaming')}</span>
+              </span>
+            </div>
+            <div className="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
+              {liveTalk}
+              <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-indigo-400/80 align-middle animate-pulse" />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Active Running Pulse Indicator */}
-      {isExecuting && (
+      {isExecuting && !hasLiveStream && (
         <div className="flex items-center gap-2.5 text-xs text-indigo-300 bg-indigo-950/30 border border-indigo-500/30 px-3 py-2 rounded-xl animate-pulse">
-          <Terminal className="w-4 h-4 animate-spin text-indigo-400" />
+          <Terminal className="w-4 h-4 animate-spin text-indigo-400" aria-hidden="true" />
           <span>{t('stream.executing')}</span>
         </div>
       )}

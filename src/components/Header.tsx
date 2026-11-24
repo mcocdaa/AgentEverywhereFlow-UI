@@ -4,6 +4,7 @@ import {
   Globe,
   Plus,
   RotateCcw,
+  Server,
   Settings,
   ShieldAlert,
   ShieldCheck,
@@ -22,11 +23,13 @@ interface HeaderProps {
   connectionStatus: ConnectionStatus
   backendVersion: string | null
   permissionMode: PermissionMode
+  apiKeyUnconfigured?: boolean
   onSelectSession: (sessionId: string) => void
   onOpenNewSessionModal: () => void
   onTogglePermission: () => void
   onOpenExportModal: () => void
   onResetSession: () => void
+  onOpenEndpointModal: () => void
   onOpenSettingsModal: () => void
   onDeleteSession: (sessionId: string) => Promise<void>
   onRenameSession: (sessionId: string, newTitle: string) => Promise<void>
@@ -40,11 +43,13 @@ export const Header: React.FC<HeaderProps> = ({
   connectionStatus,
   backendVersion,
   permissionMode,
+  apiKeyUnconfigured = false,
   onSelectSession,
   onOpenNewSessionModal,
   onTogglePermission,
   onOpenExportModal,
   onResetSession,
+  onOpenEndpointModal,
   onOpenSettingsModal,
   onDeleteSession,
   onRenameSession,
@@ -97,14 +102,14 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="flex items-center gap-2 lg:gap-3.5 min-w-0 shrink-0">
         <div className="flex items-center gap-2 shrink-0">
           <div className="w-8 h-8 lg:w-9 lg:h-9 rounded-lg bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/20 ring-1 ring-white/20">
-            <Tv className="w-4 h-4 lg:w-5 lg:h-5 text-white" />
+            <Tv className="w-4 h-4 lg:w-5 lg:h-5 text-white" aria-hidden="true" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
               <span className="font-bold text-sm lg:text-base tracking-tight text-white whitespace-nowrap">
                 AgentEverywhere<span className="text-indigo-400">Flow</span>
               </span>
-              <span className="hidden xl:inline-block px-1.5 py-0.5 text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 rounded border border-indigo-500/30">
+              <span className="hidden xl:inline-block px-1.5 py-0.5 text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 rounded border border-indigo-500/30 whitespace-nowrap">
                 {t('newSession.studioBadge')}
               </span>
             </div>
@@ -112,29 +117,36 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Backend Connection Indicator & Settings Button */}
+        {/* Backend Connection Indicator (opens EndpointModal) */}
         <div className="h-5 w-px bg-slate-800 shrink-0" />
         <button
-          onClick={onOpenSettingsModal}
+          type="button"
+          onClick={onOpenEndpointModal}
           title={statusDisplay.tooltip}
-          className="flex items-center gap-1.5 text-xs text-slate-400 bg-slate-950/60 hover:bg-slate-950 hover:text-slate-200 px-2 lg:px-2.5 py-1 rounded-full border border-slate-800 hover:border-slate-700 transition cursor-pointer group shrink-0"
+          className="flex items-center gap-1.5 text-xs text-slate-400 bg-slate-950/60 hover:bg-slate-950 hover:text-slate-200 px-2 lg:px-2.5 py-1 rounded-full border border-slate-800 hover:border-slate-700 transition cursor-pointer group shrink-0 whitespace-nowrap"
         >
           <span className={`w-2 h-2 rounded-full shrink-0 ${statusDisplay.colorClass}`} />
           <span className="capitalize inline-block font-medium whitespace-nowrap">{statusDisplay.label}</span>
           {backendVersion && (
-            <span className="hidden xl:inline text-[10px] text-slate-500 font-mono">v{backendVersion}</span>
+            <span className="hidden xl:inline text-[10px] text-slate-500 font-mono whitespace-nowrap">
+              v{backendVersion}
+            </span>
           )}
-          <Settings className="w-3 h-3 text-slate-500 group-hover:text-slate-300 transition shrink-0" />
+          <Server
+            className="w-3 h-3 text-slate-500 group-hover:text-slate-300 transition shrink-0"
+            aria-hidden="true"
+          />
         </button>
 
         {/* Language Switcher */}
         <button
+          type="button"
           data-action="toggle-locale"
           onClick={toggleLanguage}
           title={t('header.language')}
           className="flex items-center gap-1.5 text-xs text-slate-300 bg-slate-950/60 hover:bg-slate-950 hover:text-white px-2 lg:px-2.5 py-1 rounded-full border border-slate-800 hover:border-slate-700 transition cursor-pointer shrink-0 font-medium whitespace-nowrap"
         >
-          <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+          <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" aria-hidden="true" />
           <span className="locale-toggle-badge">{language === 'zh' ? t('header.langEn') : t('header.langZh')}</span>
         </button>
       </div>
@@ -152,29 +164,33 @@ export const Header: React.FC<HeaderProps> = ({
         />
 
         <button
+          type="button"
           onClick={onOpenNewSessionModal}
           title={t('header.newSession')}
           className="flex items-center gap-1.5 px-2.5 lg:px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm shadow-indigo-600/30 whitespace-nowrap transition active:scale-95 cursor-pointer shrink-0"
         >
-          <Plus className="w-3.5 h-3.5 shrink-0" />
+          <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
           <span>{t('header.newSession')}</span>
         </button>
 
         {activeSession && (
           <button
+            type="button"
             onClick={onResetSession}
+            aria-label={t('header.resetTooltip')}
             title={t('header.resetTooltip')}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 border border-slate-800 transition active:scale-95 cursor-pointer shrink-0"
           >
-            <RotateCcw className="w-3.5 h-3.5" />
+            <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
           </button>
         )}
       </div>
 
-      {/* Right Controls: Permission Mode & Export */}
-      <div className="flex items-center gap-1.5 lg:gap-2.5 justify-self-end shrink-0">
+      {/* Right Controls: Permission Mode, Export & Model Settings */}
+      <div className="flex items-center gap-1.5 lg:gap-2 justify-self-end shrink-0">
         {/* Permission Mode Toggle Button */}
         <button
+          type="button"
           onClick={onTogglePermission}
           title={
             permissionMode === 'manual'
@@ -189,12 +205,12 @@ export const Header: React.FC<HeaderProps> = ({
         >
           {permissionMode === 'manual' ? (
             <>
-              <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-hidden="true" />
               <span>{t('header.permissionManual')}</span>
             </>
           ) : (
             <>
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" aria-hidden="true" />
               <span>{t('header.permissionAuto')}</span>
             </>
           )}
@@ -202,13 +218,36 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Export Workflow */}
         <button
+          type="button"
           onClick={onOpenExportModal}
           disabled={!activeSession}
           title={t('header.exportTooltip')}
           className="flex items-center gap-1.5 px-2.5 lg:px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700/60 whitespace-nowrap shrink-0 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
         >
-          <Download className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <Download className="w-3.5 h-3.5 text-slate-400 shrink-0" aria-hidden="true" />
           <span>{t('header.export')}</span>
+        </button>
+
+        {/* Model / API Key Settings Button */}
+        <button
+          type="button"
+          onClick={onOpenSettingsModal}
+          aria-label={
+            apiKeyUnconfigured
+              ? t('header.modelSettingsUnconfiguredTooltip')
+              : t('header.modelSettingsTooltip')
+          }
+          title={
+            apiKeyUnconfigured
+              ? t('header.modelSettingsUnconfiguredTooltip')
+              : t('header.modelSettingsTooltip')
+          }
+          className="relative p-1.5 lg:p-2 rounded-lg text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700 border border-slate-700/60 transition cursor-pointer shrink-0"
+        >
+          <Settings className="w-4 h-4" aria-hidden="true" />
+          {apiKeyUnconfigured && (
+            <span className="w-2 h-2 rounded-full bg-amber-400 ring-2 ring-slate-900 absolute -top-0.5 -right-0.5" />
+          )}
         </button>
       </div>
     </header>

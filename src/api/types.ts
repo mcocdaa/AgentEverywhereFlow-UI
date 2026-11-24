@@ -5,7 +5,7 @@ export interface Rect {
   height: number
 }
 
-export type TargetType = 'display' | 'window'
+export type TargetType = 'display' | 'window' | 'region' | 'cdp'
 
 export interface TargetInfo {
   target_id: string
@@ -15,6 +15,28 @@ export interface TargetInfo {
   process_name: string
   is_minimized: boolean
   rect: Rect
+}
+
+export interface RegionSpec {
+  x: number
+  y: number
+  width: number
+  height: number
+  title?: string
+  parent_target_id?: string
+}
+
+export interface CdpTargetInfo {
+  id: string
+  target_id: string
+  title: string
+  url: string
+  ws_url: string
+}
+
+export interface CdpTargetsResponse {
+  endpoint: string
+  targets: CdpTargetInfo[]
 }
 
 export type ExecutionMode = 'minimal' | 'guarded'
@@ -28,6 +50,25 @@ export type SessionState =
   | 'error'
   | 'closed'
 
+export interface AppConfigResponse {
+  model_name: string
+  base_url: string
+  api_key_set: boolean
+  api_key_preview: string
+  default_mode: ExecutionMode
+  default_permission: PermissionMode
+  summon_hotkey: string
+}
+
+export interface PatchConfigRequest {
+  api_key?: string
+  model_name?: string
+  base_url?: string
+  default_mode?: ExecutionMode
+  default_permission?: PermissionMode
+  summon_hotkey?: string
+}
+
 export interface PendingApproval {
   action: string
   params: Record<string, unknown>
@@ -37,6 +78,13 @@ export interface PendingApproval {
   action_type?: string
   details?: Record<string, unknown>
   description?: string
+}
+
+export interface SessionTargetInfo {
+  target_id: string
+  title: string
+  target_type?: TargetType
+  rect: Rect
 }
 
 export interface SessionSummary {
@@ -55,11 +103,8 @@ export interface SessionSummary {
 export interface SessionDetail {
   session_id: string
   title?: string
-  target: {
-    target_id: string
-    title: string
-    rect: Rect
-  }
+  target: SessionTargetInfo
+  targets?: SessionTargetInfo[]
   mode: ExecutionMode
   permission_mode: PermissionMode
   state: SessionState
@@ -73,8 +118,11 @@ export type SessionEventType =
   | 'turn_start'
   | 'observe'
   | 'reasoning'
+  | 'reasoning_delta'
   | 'message'
   | 'talk'
+  | 'talk_delta'
+  | 'content_delta'
   | 'action_proposed'
   | 'approval_required'
   | 'approval_resolved'
@@ -93,6 +141,12 @@ export interface SessionEvent {
   timestamp: number
 }
 
+export interface StreamingTextState {
+  reasoning: string
+  talk: string
+  step: number
+}
+
 export interface HealthResponse {
   status: string
   version: string
@@ -100,7 +154,10 @@ export interface HealthResponse {
 }
 
 export interface CreateSessionRequest {
-  target_id: string
+  target_id?: string
+  target_ids?: string[]
+  region?: RegionSpec
+  cdp_ws_url?: string
   mode?: ExecutionMode
   permission_mode?: PermissionMode
   session_id?: string
@@ -150,4 +207,3 @@ export interface RunWorkflowResponse {
   error?: string | null
   workflow?: Record<string, unknown>
 }
-

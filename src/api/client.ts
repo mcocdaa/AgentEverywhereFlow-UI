@@ -1,9 +1,14 @@
 import type {
+  AppConfigResponse,
+  CdpTargetInfo,
+  CdpTargetsResponse,
   CreateSessionRequest,
   ExportSessionResponse,
   HealthResponse,
+  PatchConfigRequest,
   PendingApproval,
   PermissionMode,
+  Rect,
   RunWorkflowRequest,
   RunWorkflowResponse,
   SendMessageRequest,
@@ -70,6 +75,40 @@ class ApiClient {
     return this.request<TargetInfo[]>(`/api/v1/targets${qs}`)
   }
 
+  getTargetThumbnailUrl(targetId: string, width = 360, cacheBust?: number): string {
+    const base = this.baseUrl || (typeof window !== 'undefined' ? window.location.origin : '')
+    const suffix = cacheBust ? `&t=${cacheBust}` : ''
+    return `${base}/api/v1/targets/${encodeURIComponent(targetId)}/thumbnail?width=${width}${suffix}`
+  }
+
+  async listCdpTargets(endpoint?: string): Promise<CdpTargetsResponse> {
+    const params = new URLSearchParams()
+    if (endpoint && endpoint.trim()) {
+      params.append('endpoint', endpoint.trim())
+    }
+    const qs = params.toString() ? `?${params.toString()}` : ''
+    const res = await this.request<CdpTargetsResponse | CdpTargetInfo[]>(`/api/v1/targets/cdp${qs}`)
+    const fallbackEndpoint = endpoint?.trim() || 'http://127.0.0.1:9222'
+    if (Array.isArray(res)) {
+      return { endpoint: fallbackEndpoint, targets: res }
+    }
+    return {
+      endpoint: res.endpoint || fallbackEndpoint,
+      targets: Array.isArray(res.targets) ? res.targets : [],
+    }
+  }
+
+  async getConfig(): Promise<AppConfigResponse> {
+    return this.request<AppConfigResponse>('/api/v1/config')
+  }
+
+  async patchConfig(payload: PatchConfigRequest): Promise<AppConfigResponse> {
+    return this.request<AppConfigResponse>('/api/v1/config', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+  }
+
   async listSessions(): Promise<SessionSummary[]> {
     return this.request<SessionSummary[]>('/api/v1/sessions')
   }
@@ -120,7 +159,10 @@ class ApiClient {
     })
   }
 
-  async switchTarget(sessionId: string, targetId: string): Promise<{ status: string; target: { target_id: string; title: string } }> {
+  async switchTarget(
+    sessionId: string,
+    targetId: string
+  ): Promise<{ status: string; target: { target_id: string; title: string; rect?: Rect } }> {
     return this.request(`/api/v1/sessions/${encodeURIComponent(sessionId)}/target`, {
       method: 'POST',
       body: JSON.stringify({ target_id: targetId }),
@@ -194,4 +236,3 @@ class ApiClient {
 }
 
 export const api = new ApiClient()
-

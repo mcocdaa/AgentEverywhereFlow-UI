@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@source not "../desktop";
 
 @layer base {
   * {
@@ -12,6 +13,66 @@
     padding: 0;
     overflow-x: hidden;
   }
+  :where(button, a, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid #818cf8;
+    outline-offset: 2px;
+  }
+}
+
+/* Native <dialog> modal scroll containment and backdrop styling (modern-web-guidance: dialog) */
+@layer base {
+  dialog:modal {
+    overscroll-behavior: contain;
+  }
+
+  dialog::backdrop {
+    overflow: hidden;
+    overscroll-behavior: contain;
+    background-color: rgba(2, 6, 23, 0.76);
+    backdrop-filter: blur(4px);
+  }
+
+  dialog.aef-dialog {
+    margin: auto;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    width: calc(100vw - 1.5rem);
+    max-width: calc(100vw - 1.5rem);
+    max-height: calc(100dvh - 1.5rem);
+    overflow: visible;
+  }
+
+  dialog.aef-dialog[open] {
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+/* Accessible tab indicator via border-block-end so forced-colors mode preserves state */
+.aef-tab {
+  position: relative;
+}
+
+.aef-tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  border-block-end: 2px solid #818cf8;
+}
+
+/* Visually hidden utility keeping text accessible to screen readers */
+.visually-hidden:where(:not(:focus-within, :active)) {
+  position: absolute !important;
+  clip-path: inset(50%) !important;
+  overflow: hidden !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  white-space: nowrap !important;
 }
 
 /* Custom Scrollbar */

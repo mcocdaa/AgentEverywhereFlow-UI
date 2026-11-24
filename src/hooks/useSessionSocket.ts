@@ -6,9 +6,26 @@ import type {
   PermissionMode,
   SessionDetail,
   SessionEvent,
+  StreamingTextState,
 } from '../api/types'
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected'
+
+const EMPTY_STREAMING: StreamingTextState = { reasoning: '', talk: '', step: 0 }
+
+function isDeltaEvent(eventType: string): boolean {
+  return (
+    eventType === 'reasoning_delta' ||
+    eventType === 'talk_delta' ||
+    eventType === 'content_delta'
+  )
+}
+
+function extractDeltaChunk(payload: Record<string, unknown> | undefined): string {
+  if (!payload) return ''
+  const raw = payload.delta ?? payload.text ?? payload.content ?? payload.chunk ?? ''
+  return typeof raw === 'string' ? raw : ''
+}
 
 function getEventKey(ev: SessionEvent): string {
   const idDisc =
@@ -26,6 +43,7 @@ export function useSessionSocket(
 ) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected')
   const [events, setEvents] = useState<SessionEvent[]>([])
+  const [streaming, setStreaming] = useState<StreamingTextState>(EMPTY_STREAMING)
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null)
   const [isExecuting, setIsExecuting] = useState(false)
   const [currentTurn, setCurrentTurn] = useState<number>(0)
@@ -43,6 +61,7 @@ export function useSessionSocket(
   // Load session history and reset state when session changes
   useEffect(() => {
     setEvents([])
+    setStreaming(EMPTY_STREAMING)
     setPendingApproval(null)
     setIsExecuting(false)
     setCurrentTurn(0)
@@ -56,11 +75,12 @@ export function useSessionSocket(
       .then((history) => {
         if (cancelled) return
         if (history && Array.isArray(history.events)) {
+          const durableEvents = history.events.filter((e) => !isDeltaEvent(e.event_type))
           setEvents((prev) => {
-            if (prev.length === 0) return history.events
+            if (prev.length === 0) return durableEvents
             const seen = new Set<string>()
             const merged: SessionEvent[] = []
-            for (const e of [...history.events, ...prev]) {
+            for (const e of [...durableEvents, ...prev]) {
               const k = getEventKey(e)
               if (!seen.has(k)) {
                 seen.add(k)
@@ -149,6 +169,38 @@ export function useSessionSocket(
             return
           }
 
+          if (ev.step !== undefined) {
+            setCurrentStep(ev.step)
+          }
+
+          // Handle live streaming token deltas without bloating durable events[]
+          if (isDeltaEvent(ev.event_type)) {
+            const chunk = extractDeltaChunk(ev.payload)
+            if (chunk) {
+              setIsExecuting(true)
+              setStreaming((prev) => {
+                const nextStep = ev.step ?? prev.step
+                const stepChanged = prev.step !== 0 && nextStep !== prev.step
+                const baseReasoning = stepChanged ? '' : prev.reasoning
+                const baseTalk = stepChanged ? '' : prev.talk
+
+                if (ev.event_type === 'reasoning_delta') {
+                  return {
+                    reasoning: baseReasoning + chunk,
+                    talk: baseTalk,
+                    step: nextStep,
+                  }
+                }
+                return {
+                  reasoning: baseReasoning,
+                  talk: baseTalk + chunk,
+                  step: nextStep,
+                }
+              })
+            }
+            return
+          }
+
           setEvents((prev) => {
             const evKey = getEventKey(ev)
             if (prev.some((p) => getEventKey(p) === evKey)) {
@@ -157,14 +209,11 @@ export function useSessionSocket(
             return [...prev, ev]
           })
 
-          if (ev.step !== undefined) {
-            setCurrentStep(ev.step)
-          }
-
           // Handle specific event types
           switch (ev.event_type) {
             case 'turn_start': {
               setIsExecuting(true)
+              setStreaming(EMPTY_STREAMING)
               const turnNum = typeof ev.payload.turn === 'number' ? ev.payload.turn : 1
               setCurrentTurn(turnNum)
               break
@@ -173,7 +222,17 @@ export function useSessionSocket(
               onScreenshotRefresh?.()
               break
             }
+            case 'reasoning': {
+              setStreaming((prev) => (prev.reasoning ? { ...prev, reasoning: '' } : prev))
+              break
+            }
+            case 'talk':
+            case 'message': {
+              setStreaming((prev) => (prev.talk ? { ...prev, talk: '' } : prev))
+              break
+            }
             case 'action_proposed': {
+              setStreaming(EMPTY_STREAMING)
               const innerPayload =
                 ev.payload.payload && typeof ev.payload.payload === 'object'
                   ? (ev.payload.payload as Record<string, unknown>)
@@ -242,6 +301,7 @@ export function useSessionSocket(
             case 'aborted': {
               setIsExecuting(false)
               setPendingApproval(null)
+              setStreaming(EMPTY_STREAMING)
               onScreenshotRefresh?.()
               api
                 .getSession(currentTargetSessionId)
@@ -259,6 +319,7 @@ export function useSessionSocket(
             case 'error': {
               setIsExecuting(false)
               setPendingApproval(null)
+              setStreaming(EMPTY_STREAMING)
               const errMsg = String(ev.payload?.error || '')
               if (!errMsg.toLowerCase().includes('not found')) {
                 onScreenshotRefresh?.()
@@ -328,6 +389,8 @@ export function useSessionSocket(
     (instruction: string, maxSteps = 50) => {
       const curId = activeSessionIdRef.current
       if (!curId) return
+
+      setStreaming(EMPTY_STREAMING)
 
       if (
         socketRef.current &&
@@ -425,15 +488,18 @@ export function useSessionSocket(
     }
     setIsExecuting(false)
     setPendingApproval(null)
+    setStreaming(EMPTY_STREAMING)
   }, [])
 
   const clearEvents = useCallback(() => {
     setEvents([])
+    setStreaming(EMPTY_STREAMING)
   }, [])
 
   return {
     status,
     events,
+    streaming,
     pendingApproval,
     isExecuting,
     currentTurn,

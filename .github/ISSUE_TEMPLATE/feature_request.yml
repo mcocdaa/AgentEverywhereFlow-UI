@@ -1,5 +1,5 @@
 name: ✨ Feature Request
-description: Suggest an idea or UI capability for AgentEverywhereFlow-WebUI
+description: Suggest an idea or UI capability for AgentEverywhereFlow-UI
 labels: ["enhancement"]
 body:
   - type: markdown

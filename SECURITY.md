@@ -12,7 +12,7 @@ Security updates are provided for the latest releases on the `main` branch.
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability or potential risk in **AgentEverywhereFlow-WebUI**, please **do not** file a public issue.
+If you discover a security vulnerability or potential risk in **AgentEverywhereFlow-UI**, please **do not** file a public issue.
 
 Please report vulnerabilities privately via:
 1. **GitHub Private Vulnerability Reporting**: Go to **Security** -> **Advisories** -> **Report a vulnerability**.

@@ -1,4 +1,4 @@
-# Contributing to AgentEverywhereFlow-WebUI
+# Contributing to AgentEverywhereFlow-UI
 
 Thank you for your interest in contributing to the **AgentEverywhereFlow Web Console**!
 
@@ -32,5 +32,5 @@ Thank you for your interest in contributing to the **AgentEverywhereFlow Web Con
 ## 📐 Architecture & Principles
 
 - **Viewport Isolation Invariant**: All coordinates rendered on the canvas/viewport monitor must adhere strictly to the target window's local coordinate system `(0, 0, width, height)`.
-- **Zero Heavy GUI Baggage in Backend**: All UI logic belongs here in `AgentEverywhereFlow-WebUI`, keeping the core Python backend completely headless.
+- **Zero Heavy GUI Baggage in Backend**: All UI logic belongs here in `AgentEverywhereFlow-UI`, keeping the core Python backend completely headless.
 - **Graceful WebSocket Degradation**: Always handle disconnection and auto-reconnect backoff gracefully. Fallback to REST APIs where appropriate.

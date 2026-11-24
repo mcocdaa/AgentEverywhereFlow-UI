@@ -1,11 +1,11 @@
 <div align="center">
 
-# AgentEverywhereFlow WebUI
+# AgentEverywhereFlow UI
 
-**Viewport-isolated studio console & desktop companion for embodied desktop agents, powered by [AgentEverywhereFlow](https://github.com/mcocdaa/AgentEverywhereFlow).**
+**Official UI suite for [AgentEverywhereFlow](https://github.com/mcocdaa/AgentEverywhereFlow): embedded React WebUI Studio & lightweight Tauri v2 Desktop Launcher.**
 
 [![Family: *Flow](https://img.shields.io/badge/family-*Flow-8A2BE2.svg)](https://github.com/mcocdaa)
-[![CI Status](https://github.com/mcocdaa/AgentEverywhereFlow-WebUI/actions/workflows/ci.yml/badge.svg)](https://github.com/mcocdaa/AgentEverywhereFlow-WebUI/actions)
+[![CI Status](https://github.com/mcocdaa/AgentEverywhereFlow-UI/actions/workflows/ci.yml/badge.svg)](https://github.com/mcocdaa/AgentEverywhereFlow-UI/actions)
 [![React 19](https://img.shields.io/badge/React-19-61DAFB.svg?logo=react&logoColor=black)](package.json)
 [![Tailwind v4](https://img.shields.io/badge/Tailwind-v4-38B2AC.svg?logo=tailwindcss&logoColor=white)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -51,8 +51,8 @@ Open **`http://127.0.0.1:8000`** in your browser to launch the studio console im
 Run the Vite development server against a running `aef serve` backend (`http://127.0.0.1:8000`):
 
 ```bash
-git clone https://github.com/mcocdaa/AgentEverywhereFlow-WebUI.git
-cd AgentEverywhereFlow-WebUI
+git clone https://github.com/mcocdaa/AgentEverywhereFlow-UI.git
+cd AgentEverywhereFlow-UI
 
 npm install
 npm run dev
@@ -60,9 +60,15 @@ npm run dev
 
 Open **`http://localhost:5173`** in your browser. Vite proxies `/api` HTTP and WebSocket traffic to `http://127.0.0.1:8000` by default (see `vite.config.ts`). To connect to a different host or port at runtime, click the **Online / Offline** status pill in the Studio header to set a custom Backend Endpoint URL (saved in `localStorage['aef_api_base']`).
 
-### Option 3: Lightweight Desktop Companion (`desktop/`)
+### Option 3: Lightweight Desktop Companion (`AEFlow Desktop`)
 
-See [`desktop/README.md`](desktop/README.md) for running or building the Tauri v2 desktop launcher (`AEFlow Desktop`) that pairs automatically with your local `aef serve` daemon.
+Download the prebuilt native installer directly from **[GitHub Releases](https://github.com/mcocdaa/AgentEverywhereFlow-UI/releases)** — zero `git clone`, zero Node.js, and zero Rust required:
+
+- **macOS (Apple Silicon & Intel)**: `.dmg` (Universal binary)
+- **Ubuntu / Linux**: `.deb` or `.AppImage`
+- **Windows**: `.msi` or `*-setup.exe`
+
+On launch, `AEFlow Desktop` automatically attaches to a running `aef serve` daemon, spawns `aef`/`uvx`, or lets you bootstrap the backend via `uv tool install agenteverywhereflow` in one click. For local development or building from source, see [`desktop/README.md`](desktop/README.md).
 
 ---
 
@@ -74,7 +80,7 @@ flowchart LR
         Launcher["Global Hotkey + Visual Picker + Floating Bar"]
     end
 
-    subgraph WebUI["AgentEverywhereFlow-WebUI (React 19 + Vite)"]
+    subgraph WebUI["AgentEverywhereFlow-UI (React 19 + Vite)"]
         UI["Studio Console (Thumbnail Picker + Viewport + CoT + Settings)"]
         REST["REST Client (src/api/client.ts)"]
         WS["WebSocket Hook (useSessionSocket.ts)"]

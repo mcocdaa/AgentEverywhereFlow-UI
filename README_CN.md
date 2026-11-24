@@ -1,11 +1,11 @@
 <div align="center">
 
-# AgentEverywhereFlow WebUI
+# AgentEverywhereFlow UI
 
-**基于 [AgentEverywhereFlow](https://github.com/mcocdaa/AgentEverywhereFlow) 的具身桌面智能体视口隔离控制台与轻量桌面伴侣。**
+**[AgentEverywhereFlow](https://github.com/mcocdaa/AgentEverywhereFlow) 官方 UI 套件：内置 React WebUI Studio 控制台与轻量级 Tauri v2 桌面启动器。**
 
 [![Family: *Flow](https://img.shields.io/badge/family-*Flow-8A2BE2.svg)](https://github.com/mcocdaa)
-[![CI Status](https://github.com/mcocdaa/AgentEverywhereFlow-WebUI/actions/workflows/ci.yml/badge.svg)](https://github.com/mcocdaa/AgentEverywhereFlow-WebUI/actions)
+[![CI Status](https://github.com/mcocdaa/AgentEverywhereFlow-UI/actions/workflows/ci.yml/badge.svg)](https://github.com/mcocdaa/AgentEverywhereFlow-UI/actions)
 [![React 19](https://img.shields.io/badge/React-19-61DAFB.svg?logo=react&logoColor=black)](package.json)
 [![Tailwind v4](https://img.shields.io/badge/Tailwind-v4-38B2AC.svg?logo=tailwindcss&logoColor=white)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -51,8 +51,8 @@ aef serve --host 127.0.0.1 --port 8000
 在已启动 `aef serve` 后端服务（`http://127.0.0.1:8000`）的前提下启动本地 Vite 开发服务器：
 
 ```bash
-git clone https://github.com/mcocdaa/AgentEverywhereFlow-WebUI.git
-cd AgentEverywhereFlow-WebUI
+git clone https://github.com/mcocdaa/AgentEverywhereFlow-UI.git
+cd AgentEverywhereFlow-UI
 
 npm install
 npm run dev
@@ -60,9 +60,15 @@ npm run dev
 
 在浏览器打开 **`http://localhost:5173`**。开发模式下 Vite 默认将 `/api` 的 HTTP 与 WebSocket 请求代理至 `http://127.0.0.1:8000`（见 `vite.config.ts`）。如需运行时切换自定义后端地址或端口，请直接点击顶部状态胶囊打开**后端服务连接设置**（配置保存在浏览器 `localStorage['aef_api_base']` 中）。
 
-### 方式三：轻量级桌面伴侣（`desktop/`）
+### 方式三：轻量级桌面伴侣（`AEFlow Desktop`）
 
-请参阅 [`desktop/README.md`](desktop/README.md) 了解如何开发与构建 Tauri v2 桌面端（`AEFlow Desktop`），启动后可自动发现并挂载本地 `aef serve` 引擎。
+直接前往 **[GitHub Releases](https://github.com/mcocdaa/AgentEverywhereFlow-UI/releases)** 下载对应平台的原生安装包——**无需 `git clone`、无需 Node.js、无需 Rust 环境**：
+
+- **macOS (Apple Silicon & Intel)**：`.dmg`（Universal 通用包）
+- **Ubuntu / Linux**：`.deb` 或 `.AppImage`
+- **Windows**：`.msi` 或 `*-setup.exe`
+
+桌面端启动后会自动附着已运行的 `aef serve` 守护进程、托管拉起 `aef`/`uvx`，或在缺失后端时引导通过 `uv tool install agenteverywhereflow` 一键安装。如需本地开发或从源码构建，请参阅 [`desktop/README.md`](desktop/README.md)。
 
 ---
 
@@ -74,7 +80,7 @@ flowchart LR
         Launcher["全局热键 + 可视化拾取器 + 悬浮指令栏"]
     end
 
-    subgraph WebUI["AgentEverywhereFlow-WebUI (React 19 + Vite)"]
+    subgraph WebUI["AgentEverywhereFlow-UI (React 19 + Vite)"]
         UI["工作台控制台 (缩略图选择器 + 视口监控 + 思维链 + 模型设置)"]
         REST["REST 客户端 (src/api/client.ts)"]
         WS["WebSocket Hook (useSessionSocket.ts)"]
